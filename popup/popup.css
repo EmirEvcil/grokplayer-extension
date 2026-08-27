@@ -1,0 +1,110 @@
+:root {
+  color-scheme: dark;
+}
+
+html,
+body {
+  margin: 0;
+  background: #161618;
+  color: #e6e6ea;
+  font: 13px/1.4 "Segoe UI", sans-serif;
+}
+
+body {
+  width: 240px;
+  padding: 14px;
+}
+
+header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+header img {
+  width: 28px;
+  height: 28px;
+}
+
+header strong {
+  display: block;
+  font-size: 14px;
+}
+
+.hint {
+  margin: 0 0 10px;
+  color: #9a9aa2;
+  font-size: 11px;
+}
+
+.toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 12px;
+  color: #e6e6ea;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.toggle input {
+  width: 16px;
+  height: 16px;
+  accent-color: #f0c93a;
+}
+
+.pref {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 0 0 8px;
+  color: #e6e6ea;
+  font-size: 12px;
+}
+
+.pref select {
+  width: 118px;
+  height: 28px;
+  border: 1px solid #3a3a42;
+  background: #1c1c20;
+  color: #e6e6ea;
+  font: 12px "Segoe UI", sans-serif;
+}
+
+button,
+a {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+button {
+  appearance: none;
+  border: 1px solid #3a3a42;
+  background: #1c1c20;
+  color: #f0c93a;
+  font: 600 13px/36px "Segoe UI", sans-serif;
+  cursor: pointer;
+}
+
+button:hover {
+  background: #1af0c93a;
+}
+
+#status {
+  margin: 10px 0 8px;
+  color: #9a9aa2;
+  font-size: 12px;
+}
+
+a {
+  color: #9a9aa2;
+  text-decoration: none;
+  font-size: 12px;
+}
+
+a:hover {
+  color: #f0c93a;
+}

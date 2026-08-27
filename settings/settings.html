@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>GrokPlayer</title>
+    <link rel="stylesheet" href="settings.css" />
+  </head>
+  <body>
+    <main>
+      <header>
+        <img src="../icons/icon48.png" alt="" />
+        <div>
+          <h1>GrokPlayer</h1>
+          <p>Send VOD and live streams to the desktop player.</p>
+        </div>
+      </header>
+
+      <section>
+        <label class="row">
+          <input id="showButton" type="checkbox" />
+          <span>
+            <strong>Show the on-page button</strong>
+            <em>Appears on the video player when a stream is detected.</em>
+          </span>
+        </label>
+        <label class="row">
+          <input id="autoPlay" type="checkbox" />
+          <span>
+            <strong>Play immediately</strong>
+            <em>Adds the stream and starts playback. Otherwise it only joins the Stream playlist.</em>
+          </span>
+        </label>
+      </section>
+
+      <section>
+        <label class="row">
+          <span>
+            <strong>YouTube dubbing</strong>
+            <em>YouTube only. Auto uses the YouTube menu. If that dub is missing, the original audio is used.</em>
+          </span>
+          <select id="audioPref">
+            <option value="auto">Auto (YouTube selection)</option>
+            <option value="original">Original</option>
+          </select>
+        </label>
+        <label class="row">
+          <span>
+            <strong>YouTube subtitles</strong>
+            <em>YouTube only. Auto uses the YouTube menu. If that track is missing, original captions are used.</em>
+          </span>
+          <select id="subPref">
+            <option value="auto">Auto (YouTube selection)</option>
+            <option value="off">Off</option>
+            <option value="original">Original</option>
+          </select>
+        </label>
+      </section>
+
+      <section class="actions">
+        <button id="open" type="button">Open in GrokPlayer</button>
+        <p id="status">The first launch may ask Windows to open GrokPlayer.</p>
+      </section>
+    </main>
+    <script src="settings.js"></script>
+  </body>
+</html>

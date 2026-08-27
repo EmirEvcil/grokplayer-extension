@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <header>
+      <img src="../icons/icon32.png" alt="" />
+      <div>
+        <strong>GrokPlayer</strong>
+      </div>
+    </header>
+    <label class="toggle">
+      <input id="enabled" type="checkbox" checked />
+      <span>Extension on</span>
+    </label>
+    <p class="hint">Dubbing and subtitles apply to YouTube.</p>
+    <label class="pref">
+      <span>Dubbing</span>
+      <select id="audioPref">
+        <option value="auto">Auto (YouTube selection)</option>
+        <option value="original">Original</option>
+      </select>
+    </label>
+    <label class="pref">
+      <span>Subtitles</span>
+      <select id="subPref">
+        <option value="auto">Auto (YouTube selection)</option>
+        <option value="off">Off</option>
+        <option value="original">Original</option>
+      </select>
+    </label>
+    <button id="open" type="button">Open in GrokPlayer</button>
+    <p id="status">Ready for the current tab.</p>
+    <a href="../settings/settings.html" target="_blank">Settings</a>
+    <script src="popup.js"></script>
+  </body>
+</html>

@@ -1,0 +1,48 @@
+{
+  "manifest_version": 3,
+  "name": "GrokPlayer",
+  "version": "1.1.5",
+  "description": "Open VOD and live streams in GrokPlayer.",
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "action": {
+    "default_title": "GrokPlayer",
+    "default_popup": "popup/popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
+      "48": "icons/icon48.png"
+    }
+  },
+  "options_page": "settings/settings.html",
+  "background": {
+    "service_worker": "background.js"
+  },
+  "permissions": ["storage", "activeTab", "scripting", "tabs"],
+  "host_permissions": ["https://www.youtube.com/*", "https://youtu.be/*", "https://www.youtube-nocookie.com/*"],
+  "web_accessible_resources": [
+    {
+      "resources": ["icons/*", "content/langs.js", "content/probe-page.js"],
+      "matches": ["https://www.youtube.com/*", "https://www.youtube-nocookie.com/*"]
+    }
+  ],
+  "content_scripts": [
+    {
+      "matches": ["https://www.youtube.com/*", "https://www.youtube-nocookie.com/*"],
+      "js": ["content/langs.js", "content/youtube.js"],
+      "css": ["content/youtube.css"],
+      "run_at": "document_idle",
+      "world": "ISOLATED"
+    },
+    {
+      "matches": ["https://www.youtube.com/*", "https://www.youtube-nocookie.com/*"],
+      "js": ["content/langs.js", "content/probe-page.js"],
+      "run_at": "document_idle",
+      "world": "MAIN"
+    }
+  ]
+}
