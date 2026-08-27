@@ -1,6 +1,6 @@
 # GrokPlayer Chrome extension
 
-Stage 1: YouTube VOD and live.
+Stage 1: YouTube VOD and live. The player is in a separate repository: [grokplayer](https://github.com/EmirEvcil/grokplayer).
 
 ## Load
 
