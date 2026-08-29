@@ -20,9 +20,13 @@
       clearInterval(tick);
     } catch {
     }
-    const chip = document.getElementById(ROOT_ID);
-    if (chip) {
-      chip.remove();
+    if (window.GrokPlayerChipUi) {
+      window.GrokPlayerChipUi.hide();
+    } else {
+      const chip = document.getElementById(ROOT_ID);
+      if (chip) {
+        chip.remove();
+      }
     }
   }
 
@@ -330,27 +334,6 @@
     return 0;
   }
 
-  function bestFormatUrl(list) {
-    if (!Array.isArray(list)) {
-      return "";
-    }
-    let best = "";
-    let score = -1;
-    for (const item of list) {
-      if (!item || !item.url || item.signatureCipher || item.drmFamilies) {
-        continue;
-      }
-      const width = item.width || 0;
-      const mime = item.mimeType || "";
-      const next = width + (mime.includes("avc1") ? 100 : 0);
-      if (next >= score) {
-        score = next;
-        best = item.url;
-      }
-    }
-    return best;
-  }
-
   function extract(resolved) {
     const id = videoIdFromUrl(location.href);
     if (!id) {
@@ -358,22 +341,16 @@
     }
     const pr = playerResponse();
     const details = pr && pr.videoDetails ? pr.videoDetails : {};
-    const streaming = pr && pr.streamingData ? pr.streamingData : {};
     const live = !!details.isLive;
     const title = details.title || document.title.replace(/ - YouTube$/, "") || id;
-    const media =
-      streaming.hlsManifestUrl ||
-      streaming.dashManifestUrl ||
-      bestFormatUrl(streaming.formats) ||
-      bestFormatUrl(streaming.adaptiveFormats) ||
-      location.href;
     const langs = resolved || resolveNow(null, { audioPref: "auto", subPref: "auto" });
+    const watchUrl = "https://www.youtube.com/watch?v=" + id;
     const info = {
       videoId: id,
       title,
       kind: live ? "live" : "vod",
-      url: media,
-      watchUrl: "https://www.youtube.com/watch?v=" + id,
+      url: watchUrl,
+      watchUrl,
       audio: langs.final.audio,
       sub: langs.final.sub,
       captionUrl: langs.captionUrl || "",
@@ -404,6 +381,7 @@
       type: "open-url",
       info: {
         watchUrl: info.watchUrl,
+        url: info.watchUrl,
         title: info.title,
         kind: info.kind,
         audio: info.audio,
@@ -513,48 +491,28 @@
   }
 
   function mount(info) {
-    const host = document.querySelector("#movie_player") || document.querySelector("ytd-player");
-    if (!host) {
+    const target = document.querySelector("#movie_player") || document.querySelector("ytd-player");
+    if (!target) {
       return;
     }
-    const style = getComputedStyle(host);
-    if (style.position === "static") {
-      host.style.position = "relative";
+    const ui = window.GrokPlayerChipUi;
+    if (!ui) {
+      return;
     }
-
-    let chip = document.getElementById(ROOT_ID);
-    if (!chip) {
-      chip = document.createElement("div");
-      chip.id = ROOT_ID;
-      chip.innerHTML =
-        '<button class="open" type="button">' +
-        '<img alt="" src="' + chrome.runtime.getURL("icons/icon32.png") + '">' +
-        '<span>Open in GrokPlayer</span>' +
-        '<span class="kind"></span>' +
-        "</button>" +
-        '<button class="close" type="button" aria-label="Hide">×</button>';
-      chip.querySelector(".open").addEventListener("click", (e) => {
-        e.preventDefault();
-        e.stopPropagation();
+    ui.show({
+      kind: info.kind === "live" ? "live" : "vod",
+      target,
+      onOpen: () => {
         if (!live()) {
           abandon();
           return;
         }
         chrome.storage.sync.get(defaults, (settings) => openInPlayer(settings.autoPlay !== false));
-      });
-      chip.querySelector(".close").addEventListener("click", (e) => {
-        e.preventDefault();
-        e.stopPropagation();
+      },
+      onClose: () => {
         hiddenFor = info.videoId;
-        chip.remove();
-      });
-      host.appendChild(chip);
-    }
-
-    const kind = chip.querySelector(".kind");
-    if (kind) {
-      kind.textContent = info.kind === "live" ? "LIVE" : "VOD";
-    }
+      }
+    });
   }
 
   function refresh() {
@@ -568,11 +526,18 @@
         return;
       }
       const info = extract();
-      const chip = document.getElementById(ROOT_ID);
-      if (settings.enabled === false || !settings.showButton || !info || hiddenFor === info.videoId) {
-        if (chip) {
-          chip.remove();
+      if (settings.enabled === false || !settings.showButton || (info && hiddenFor === info.videoId)) {
+        if (window.GrokPlayerChipUi) {
+          window.GrokPlayerChipUi.hide();
+        } else {
+          const chip = document.getElementById(ROOT_ID);
+          if (chip) {
+            chip.remove();
+          }
         }
+        return;
+      }
+      if (!info) {
         return;
       }
       if (info.videoId !== lastKey) {

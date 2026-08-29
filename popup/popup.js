@@ -120,8 +120,6 @@ openButton.addEventListener("click", () => {
       status.textContent = "Sent to GrokPlayer.";
       return;
     }
-    status.textContent = result && result.reason === "not-youtube"
-      ? "Open a YouTube video first."
-      : "No playable stream on this tab.";
+    status.textContent = "No playable stream on this tab.";
   });
 });

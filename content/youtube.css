@@ -1,19 +1,28 @@
-#grokplayer-chip {
-  position: absolute;
-  top: 12px;
-  right: 12px;
+#grokplayer-chip,
+.grokplayer-chip {
+  position: fixed !important;
+  top: 12px !important;
+  right: 12px !important;
+  left: auto !important;
   z-index: 2147483646;
-  display: flex;
+  display: inline-flex !important;
+  flex: 0 0 auto !important;
   align-items: stretch;
-  height: 36px;
+  align-self: flex-start;
+  width: max-content !important;
+  max-width: none !important;
+  height: 36px !important;
+  overflow: hidden;
   background: #161618;
   border: 1px solid #3a3a42;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
   font-family: "Segoe UI", sans-serif;
   pointer-events: auto;
+  box-sizing: border-box;
 }
 
-#grokplayer-chip button {
+#grokplayer-chip button,
+.grokplayer-chip button {
   appearance: none;
   border: 0;
   background: transparent;
@@ -21,34 +30,46 @@
   cursor: pointer;
   font: inherit;
   padding: 0;
+  margin: 0;
+  height: 36px;
+  box-sizing: border-box;
 }
 
-#grokplayer-chip .open {
+#grokplayer-chip .open,
+.grokplayer-chip .open {
   display: flex;
   align-items: center;
+  flex: 0 0 auto;
   gap: 8px;
   padding: 0 12px 0 10px;
   font-size: 12px;
   font-weight: 600;
   letter-spacing: 0.01em;
+  white-space: nowrap;
 }
 
-#grokplayer-chip .open:hover {
+#grokplayer-chip .open:hover,
+.grokplayer-chip .open:hover {
   background: #1af0c93a;
   color: #f0c93a;
 }
 
-#grokplayer-chip .open:active {
+#grokplayer-chip .open:active,
+.grokplayer-chip .open:active {
   background: #28f0c93a;
 }
 
-#grokplayer-chip img {
+#grokplayer-chip img,
+.grokplayer-chip img {
   width: 18px;
   height: 18px;
+  flex: 0 0 18px;
+  object-fit: contain;
   display: block;
 }
 
-#grokplayer-chip .kind {
+#grokplayer-chip .kind,
+.grokplayer-chip .kind {
   color: #d9899c;
   font-size: 10px;
   font-weight: 700;
@@ -56,15 +77,52 @@
   text-transform: uppercase;
 }
 
-#grokplayer-chip .close {
+#grokplayer-chip .skip,
+.grokplayer-chip .skip {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  padding: 0 10px;
+  border-left: 1px solid #3a3a42;
+  color: #f0c93a;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+#grokplayer-chip .skip.on,
+.grokplayer-chip .skip.on {
+  display: flex;
+}
+
+#grokplayer-chip .skip:hover,
+.grokplayer-chip .skip:hover {
+  background: #1af0c93a;
+}
+
+#grokplayer-chip .close,
+.grokplayer-chip .close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
   width: 32px;
+  min-width: 32px;
   border-left: 1px solid #3a3a42;
   color: #9a9aa2;
   font-size: 16px;
-  line-height: 36px;
+  line-height: 1;
 }
 
-#grokplayer-chip .close:hover {
+#grokplayer-chip .close:hover,
+.grokplayer-chip .close:hover {
   color: #f0c93a;
   background: #1af0c93a;
+}
+
+#grokplayer-chip .close svg,
+.grokplayer-chip .close svg {
+  width: 10px;
+  height: 10px;
+  display: block;
 }
