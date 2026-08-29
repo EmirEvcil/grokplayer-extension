@@ -40,13 +40,13 @@ function applyTracks(result) {
     { value: "off", label: "Off" },
     { value: "original", label: "Original" }
   ]);
-  chrome.storage.sync.get({ audioPref: "auto", subPref: "auto" }, (settings) => {
+  chrome.storage.sync.get({ audioPref: "auto" }, (settings) => {
     if ([...audioPref.options].some((item) => item.value === settings.audioPref)) {
       audioPref.value = settings.audioPref;
     }
-    if ([...subPref.options].some((item) => item.value === settings.subPref)) {
-      subPref.value = settings.subPref;
-    }
+    // Subtitle choices are per-open. Default to the track currently selected
+    // on YouTube instead of reusing a track chosen for another video.
+    subPref.value = "auto";
   });
 }
 
@@ -84,17 +84,16 @@ chrome.storage.sync.get({ enabled: true, audioPref: "auto", subPref: "auto" }, (
   enabled.checked = settings.enabled !== false;
   openButton.disabled = settings.enabled === false;
   audioPref.value = settings.audioPref || "auto";
-  subPref.value = settings.subPref || "auto";
+  subPref.value = "auto";
   status.textContent = settings.enabled === false ? "Extension is off." : "Ready for the current tab.";
   loadTracks();
 });
 
 function savePrefs() {
-  chrome.storage.sync.set({ audioPref: audioPref.value || "auto", subPref: subPref.value || "auto" });
+  chrome.storage.sync.set({ audioPref: audioPref.value || "auto" });
 }
 
 audioPref.addEventListener("change", savePrefs);
-subPref.addEventListener("change", savePrefs);
 
 enabled.addEventListener("change", () => {
   chrome.storage.sync.set({ enabled: enabled.checked });
@@ -108,7 +107,11 @@ openButton.addEventListener("click", () => {
     return;
   }
   status.textContent = "Opening…";
-  chrome.runtime.sendMessage({ type: "open-active" }, (result) => {
+  chrome.runtime.sendMessage({
+    type: "open-active",
+    audioPref: audioPref.value || "auto",
+    subPref: subPref.value || "auto"
+  }, (result) => {
     if (chrome.runtime.lastError) {
       status.textContent = "Could not reach the current tab.";
       return;

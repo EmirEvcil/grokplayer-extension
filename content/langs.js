@@ -247,6 +247,77 @@
     return "";
   }
 
+  function trackUrl(track) {
+    if (!track || typeof track !== "object") {
+      return "";
+    }
+    const raw = track.baseUrl || track.url || "";
+    return typeof raw === "string" && /^https?:\/\//i.test(raw) ? raw : "";
+  }
+
+  function captionUrlFor(code, tracks) {
+    const want = asText(code);
+    if (!want || want === "off") {
+      return "";
+    }
+    const list = asArray(tracks);
+    const exact = list.find((item) => item && item.url && item.code === want);
+    if (exact) {
+      return exact.url;
+    }
+    const base = want.replace(/:asr$/i, "");
+    const translated = list.some((item) => item && item.kind === "translated" && (item.code === want || item.code === base));
+    if (!translated) {
+      const loose = list.find((item) => {
+        if (!item || !item.url || !item.code) {
+          return false;
+        }
+        return item.code === base;
+      });
+      if (loose) {
+        return loose.url;
+      }
+    }
+    const source = list.find((item) => {
+      if (!item || !item.url) {
+        return false;
+      }
+      const lang = String(item.code || "").replace(/:asr$/i, "");
+      // A plain authored `tr` request must never silently fall back to
+      // `tr:asr`. ASR is valid only when explicitly selected, or as the source
+      // of an actual translation from a different language.
+      return lang !== base && (item.kind === "asr" || /:asr$/i.test(item.code));
+    }) || list.find((item) => item && item.url && String(item.code || "").replace(/:asr$/i, "") !== base);
+    if (source) {
+      const sourceLang = String(source.code || "").replace(/:asr$/i, "");
+      return withTlang(source.url, base);
+    }
+    return "";
+  }
+
+  function isAsrTrack(track) {
+    if (!track || typeof track !== "object") {
+      return false;
+    }
+    if (String(track.kind || "").toLowerCase() === "asr") {
+      return true;
+    }
+    const vss = String(track.vssId || track.vss_id || "");
+    return /^a\./i.test(vss);
+  }
+
+  function withTlang(url, lang) {
+    const href = asText(url);
+    const code = asText(lang).replace(/:asr$/i, "");
+    if (!href || !code) {
+      return href;
+    }
+    if (/[?&]tlang=/i.test(href)) {
+      return href.replace(/([?&]tlang=)[^&]*/i, "$1" + encodeURIComponent(code));
+    }
+    return href + (href.indexOf("?") >= 0 ? "&" : "?") + "tlang=" + encodeURIComponent(code);
+  }
+
   function captionCode(track) {
     if (!track) {
       return "";
@@ -263,7 +334,7 @@
     if (!code || code === "off") {
       return code;
     }
-    return track.kind === "asr" && !translated ? code + ":asr" : code;
+    return isAsrTrack(track) && !translated ? code + ":asr" : code;
   }
 
   function trackId(track) {
@@ -292,14 +363,34 @@
   }
 
   function uniqueTracks(list) {
-    const seen = new Set();
+    const byCode = new Map();
     const out = [];
     (list || []).forEach((item) => {
-      if (!item || !item.code || seen.has(item.code)) {
+      if (!item || !item.code) {
         return;
       }
-      seen.add(item.code);
-      out.push(item);
+      const existing = byCode.get(item.code);
+      if (!existing) {
+        const copy = { ...item };
+        byCode.set(item.code, copy);
+        out.push(copy);
+        return;
+      }
+      // YouTube's live tracklist often contains the selected/name metadata
+      // while playerResponse contains the signed timedtext URL. Preserve both
+      // instead of dropping the richer duplicate.
+      existing.selected = !!(existing.selected || item.selected);
+      if (!existing.url && item.url) {
+        existing.url = item.url;
+      }
+      if (!existing.name && item.name) {
+        existing.name = item.name;
+      }
+      // Translation-only entries have no URL. Do not let them reclassify an
+      // authored track with the same language code.
+      if (!existing.kind && item.kind && item.url) {
+        existing.kind = item.kind;
+      }
     });
     return out;
   }
@@ -363,12 +454,14 @@
     const availableAudio = asArray(data.getAvailableAudioTracks).concat(
       asArray(data.playerAudioTracks).map(trackFromAdaptive).filter(Boolean)
     );
-    const currentCaption = (data.captionTrack && !data.captionTrack.error && (data.captionTrack.languageCode || data.captionTrack.lang || data.captionTrack.vssId)
-      ? data.captionTrack
-      : null) || (data.ccTrack && !data.ccTrack.error ? data.ccTrack : null);
     const availableCaptions = asArray(data.captionTracklist)
       .concat(asArray(data.playerCaptionTracks))
       .concat(currentAudio && Array.isArray(currentAudio.captionTracks) ? currentAudio.captionTracks : []);
+    const listedCaption = availableCaptions.find((track) => track && (track.isSelected || track.selected));
+    const currentCaption = listedCaption ||
+      (data.captionTrack && !data.captionTrack.error && (data.captionTrack.languageCode || data.captionTrack.lang || data.captionTrack.vssId)
+        ? data.captionTrack
+        : null) || (data.ccTrack && !data.ccTrack.error ? data.ccTrack : null);
     const translations = asArray(data.translationLanguages).concat(asArray(data.playerTranslationLanguages));
 
     const currentId = trackId(currentAudio);
@@ -400,12 +493,12 @@
     const buttonOff = data.captionsOn === false;
     const selectedCaptionCode = captionCode(currentCaption);
     const showing = asArray(data.textTracks).find((item) => item && item.mode === "showing");
-    const fromText = showing ? languageCode(showing.language || showing.label) : "";
     const captionTracks = uniqueTracks(
       availableCaptions.map((track) => {
         const code = captionCode(track);
         return slimTrack(code, displayName(track), {
           kind: track && track.kind ? track.kind : "",
+          url: trackUrl(track),
           selected: !!(track && (track.isSelected || track.selected || (selectedCaptionCode && captionCode(track) === selectedCaptionCode)))
         });
       }).concat(
@@ -415,12 +508,20 @@
         }))
       )
     );
+    const fromText = showing
+      ? (matchTrack(showing.label, captionTracks) || languageCode(showing.language || showing.label))
+      : "";
 
     let detectedCaption = "";
     if (buttonOff) {
       detectedCaption = "";
-    } else if (buttonOn) {
+    } else if (buttonOn || isAsrTrack(currentCaption) || (currentCaption && currentCaption.translationLanguage)) {
       detectedCaption = selectedCaptionCode || fromText || "";
+      if (!detectedCaption) {
+        const asr = captionTracks.find((item) => item && (item.kind === "asr" || /:asr$/i.test(item.code)));
+        const any = captionTracks.find((item) => item && item.code && item.kind !== "translated");
+        detectedCaption = (asr && asr.code) || (any && any.code) || "";
+      }
     } else {
       detectedCaption = fromText || "";
     }
@@ -468,7 +569,12 @@
     }
     const code = languageCode(choice) || choice;
     if (Array.isArray(available) && available.length) {
-      const hit = available.find((item) => item.code === code || item.code === choice || item.code.replace(/:asr$/i, "") === code);
+      // A language may have both an authored track (tr) and an automatic one
+      // (tr:asr). An ordinary `tr` preference must not silently select ASR,
+      // which loses authored colors and may contain different words.
+      const hit = available.find((item) => item.code === choice) ||
+        available.find((item) => item.code === code) ||
+        available.find((item) => item.code.replace(/:asr$/i, "") === code);
       return hit ? hit.code : code;
     }
     return code;
@@ -477,6 +583,8 @@
   function resolve(snapshot, prefs) {
     const info = catalog(snapshot);
     const settings = prefs || {};
+    const finalSub = applyPref(settings.subPref, info.selectedCaption, info.captionTracks);
+    const captionUrl = captionUrlFor(finalSub, info.captionTracks);
     return {
       available: {
         audio: info.audioTracks,
@@ -492,8 +600,10 @@
       },
       final: {
         audio: applyPref(settings.audioPref, info.selectedAudio, info.audioTracks),
-        sub: applyPref(settings.subPref, info.selectedCaption, info.captionTracks)
-      }
+        sub: finalSub
+      },
+      captionsOn: info.captionsOn,
+      captionUrl: captionUrl
     };
   }
 
@@ -501,6 +611,8 @@
     languageCode,
     audioCode,
     captionCode,
+    captionUrlFor,
+    isAsrTrack,
     displayName,
     displayNameForCode,
     matchTrack,

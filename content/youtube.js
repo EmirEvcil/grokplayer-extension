@@ -106,7 +106,12 @@
     const player = playerResponsePlayer();
     if (player && typeof player.getPlayerResponse === "function") {
       try {
-        return player.getPlayerResponse();
+        const response = player.getPlayerResponse();
+        const responseId = response && response.videoDetails ? response.videoDetails.videoId || "" : "";
+        const currentId = videoIdFromUrl(location.href);
+        // During SPA navigation YouTube can briefly expose the previous
+        // video's response. Never build a protocol payload from that state.
+        return responseId && currentId && responseId !== currentId ? null : response;
       } catch {
       }
     }
@@ -212,7 +217,8 @@
 
   function mergeSnap(pageSnap) {
     const local = playerSnapshot();
-    if (!pageSnap) {
+    const currentVideoId = videoIdFromUrl(location.href);
+    if (!pageSnap || (pageSnap.videoId && currentVideoId && pageSnap.videoId !== currentVideoId)) {
       return local;
     }
     return {
@@ -370,6 +376,7 @@
       watchUrl: "https://www.youtube.com/watch?v=" + id,
       audio: langs.final.audio,
       sub: langs.final.sub,
+      captionUrl: langs.captionUrl || "",
       height: selectedHeight(),
       audioTracks: (langs.available && langs.available.audio) || [],
       captionTracks: (langs.available && langs.available.captions) || []
@@ -381,6 +388,7 @@
         pref: langs.pref,
         detected: langs.detected,
         final: langs.final,
+        captionUrl: info.captionUrl || "",
         audioCount: info.audioTracks.length,
         captionCount: info.captionTracks.length
       });
@@ -400,6 +408,7 @@
         kind: info.kind,
         audio: info.audio,
         sub: info.sub,
+        captionUrl: info.captionUrl,
         height: info.height,
         audioTracks: info.audioTracks,
         captionTracks: info.captionTracks
@@ -422,6 +431,16 @@
       return true;
     }
     return !!(audio && audio !== "original") || tracks.some((item) => item && item.selected);
+  }
+
+  function captionsReady(resolved, pref) {
+    if (pref && pref !== "auto") {
+      return true;
+    }
+    if (!resolved || !resolved.captionsOn) {
+      return true;
+    }
+    return !!(resolved.final && resolved.final.sub);
   }
 
   function snapshotResolve(settings) {
@@ -468,15 +487,18 @@
 
   function openInPlayer(play) {
     chrome.storage.sync.get({ audioPref: "auto", subPref: "auto" }, (settings) => {
-      snapshotResolve(settings).then((first) => {
-        if (audioReady(first, settings.audioPref)) {
+      // The button on the video must follow the track selected on this YouTube
+      // video. A track chosen for another video must never leak into this one.
+      const videoPrefs = { audioPref: settings.audioPref || "auto", subPref: "auto" };
+      snapshotResolve(videoPrefs).then((first) => {
+        if (audioReady(first, videoPrefs.audioPref) && captionsReady(first, videoPrefs.subPref)) {
           return first;
         }
-        return sleep(350).then(() => snapshotResolve(settings)).then((second) => {
-          if (audioReady(second, settings.audioPref)) {
+        return sleep(350).then(() => snapshotResolve(videoPrefs)).then((second) => {
+          if (audioReady(second, videoPrefs.audioPref) && captionsReady(second, videoPrefs.subPref)) {
             return second;
           }
-          return sleep(700).then(() => snapshotResolve(settings));
+          return sleep(700).then(() => snapshotResolve(videoPrefs));
         });
       }).then((resolved) => rememberDetected(resolved)).then((resolved) => {
         const info = extract(resolved);
@@ -567,8 +589,9 @@
     }
     if (message && message.type === "extract") {
       injectPageProbe().then(() => requestPageTracks()).then((page) => {
-        chrome.storage.sync.get({ audioPref: "auto", subPref: "auto" }, (settings) => {
-          rememberDetected(resolveNow(page, settings)).then((resolved) => sendResponse(extract(resolved)));
+        chrome.storage.sync.get({ audioPref: "auto" }, (settings) => {
+          rememberDetected(resolveNow(page, { audioPref: settings.audioPref || "auto", subPref: "auto" }))
+            .then((resolved) => sendResponse(extract(resolved)));
         });
       });
       return true;

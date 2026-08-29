@@ -9,6 +9,11 @@ function applyLangPrefs(info, settings) {
   }
   if (subPref && subPref !== "auto") {
     next.sub = subPref;
+    const tracks = Array.isArray(next.captionTracks) ? next.captionTracks : [];
+    const exact = tracks.find((item) => item && item.code === subPref && item.url);
+    if (exact) {
+      next.captionUrl = exact.url;
+    }
   }
   return next;
 }
@@ -27,8 +32,9 @@ function protocol(info, play) {
   }
   if (info.sub) {
     params.set("sub", info.sub);
-  } else {
-    params.set("sub", "off");
+  }
+  if (info.captionUrl) {
+    params.set("caption", info.captionUrl);
   }
   if (info.height) {
     params.set("height", String(info.height));
@@ -37,11 +43,21 @@ function protocol(info, play) {
   return "grokplayer://open?" + params.toString();
 }
 
-async function launchViaHelper(info, play) {
+async function launchViaHelper(info, play, overrides) {
   const settings = await chrome.storage.sync.get({ audioPref: "auto", subPref: "auto" });
-  const resolved = applyLangPrefs(info || {}, settings);
+  const effective = {
+    audioPref: overrides && Object.prototype.hasOwnProperty.call(overrides, "audioPref")
+      ? overrides.audioPref
+      : settings.audioPref,
+    // Incoming content-script data is already resolved from the current
+    // YouTube video. Only the popup may intentionally override that track.
+    subPref: overrides && Object.prototype.hasOwnProperty.call(overrides, "subPref")
+      ? overrides.subPref
+      : "auto"
+  };
+  const resolved = applyLangPrefs(info || {}, effective);
   console.log("[GrokPlayer] protocol resolve", {
-    pref: { audio: settings.audioPref || "auto", sub: settings.subPref || "auto" },
+    pref: { audio: effective.audioPref || "auto", sub: effective.subPref || "auto" },
     incoming: { audio: info && info.audio, sub: info && info.sub },
     final: { audio: resolved.audio, sub: resolved.sub },
     tracks: {
@@ -90,7 +106,7 @@ async function extractFromTab(tab) {
   return null;
 }
 
-async function openTab(tab, play) {
+async function openTab(tab, play, overrides) {
   if (!tab || !tab.id) {
     return { ok: false };
   }
@@ -105,11 +121,13 @@ async function openTab(tab, play) {
         kind: fromPage.kind,
         audio: fromPage.audio,
         sub: fromPage.sub,
+        captionUrl: fromPage.captionUrl,
         height: fromPage.height,
         audioTracks: fromPage.audioTracks,
         captionTracks: fromPage.captionTracks
       },
-      play
+      play,
+      overrides
     );
   }
 
@@ -118,7 +136,7 @@ async function openTab(tab, play) {
     return { ok: false, reason: "not-youtube" };
   }
 
-  return launchViaHelper({ tabUrl: url, title: tab.title || "YouTube" }, play);
+  return launchViaHelper({ tabUrl: url, title: tab.title || "YouTube" }, play, overrides);
 }
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -132,7 +150,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         sendResponse({ ok: false, reason: "disabled" });
         return;
       }
-      sendResponse(await launchViaHelper(message.info || {}, message.play !== false));
+      sendResponse(await launchViaHelper(message.info || {}, message.play !== false, { subPref: "auto" }));
     });
     return true;
   }
@@ -146,7 +164,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return;
     }
     chrome.tabs.query({ active: true, currentWindow: true }, async (tabs) => {
-      const result = await openTab(tabs[0], settings.autoPlay !== false);
+      const result = await openTab(tabs[0], settings.autoPlay !== false, {
+        audioPref: message.audioPref || settings.audioPref || "auto",
+        subPref: message.subPref || "auto"
+      });
       sendResponse(result);
     });
   });

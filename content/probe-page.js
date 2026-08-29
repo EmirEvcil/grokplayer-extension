@@ -14,15 +14,26 @@
   }
 
   function playerResponse() {
-    if (window.ytInitialPlayerResponse && window.ytInitialPlayerResponse.videoDetails) {
-      return window.ytInitialPlayerResponse;
-    }
     const player = playerEl();
     if (player && typeof player.getPlayerResponse === "function") {
       try {
-        return player.getPlayerResponse();
+        const current = player.getPlayerResponse();
+        const currentId = new URL(location.href).searchParams.get("v") || "";
+        const responseId = current && current.videoDetails ? current.videoDetails.videoId || "" : "";
+        if (current && current.videoDetails && (!currentId || !responseId || currentId === responseId)) {
+          return current;
+        }
       } catch {
-        return null;
+      }
+    }
+    // ytInitialPlayerResponse belongs to the first video loaded in this tab and
+    // can be stale after YouTube's SPA navigation. Only use it as a fallback.
+    if (window.ytInitialPlayerResponse && window.ytInitialPlayerResponse.videoDetails) {
+      const initial = window.ytInitialPlayerResponse;
+      const currentId = new URL(location.href).searchParams.get("v") || "";
+      const responseId = initial.videoDetails.videoId || "";
+      if (!currentId || !responseId || currentId === responseId) {
+        return initial;
       }
     }
     return null;
@@ -140,6 +151,7 @@
     const available = safe(() => player && player.getAvailableAudioTracks && player.getAvailableAudioTracks());
     return {
       href: location.href,
+      videoId: pr && pr.videoDetails ? pr.videoDetails.videoId || "" : "",
       getAudioTrack: audio && !audio.error ? cloneAudio(audio) : null,
       getAvailableAudioTracks: Array.isArray(available) ? available.map(cloneAudio).filter(Boolean) : [],
       captionTrack: captionTrack && !captionTrack.error && (captionTrack.languageCode || captionTrack.lang || captionTrack.vssId)
