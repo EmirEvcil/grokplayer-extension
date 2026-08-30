@@ -4,6 +4,8 @@
   const videoMedia = new WeakMap();
   const videoSound = new WeakMap();
   const playAt = new WeakMap();
+  const seenMedia = [];
+  const shortMedia = new Set();
   let active = null;
   let childPlaying = false;
 
@@ -13,18 +15,60 @@
 
   function looksAd(url) {
     return typeof url === "string" &&
-      /doubleclick|googlesyndication|imasdk|adsystem|\/ads?\/|preroll|vast|spotx|pubads|adnxs|advert|promo|adserver|adservice|exoclick|juicyads|trafficjunky|popads|\/rekla\/|reklam|xpartner|dmxleo/i.test(url);
+      /doubleclick|googlesyndication|imasdk|adsystem|\/ads?\/|preroll|vast|spotx|pubads|adnxs|advert|promo|adserver|adservice|exoclick|juicyads|trafficjunky|popads|\/rekla\/|reklam|xpartner|dmxleo|clips\.kick|\/clips?\/|bumper|marmorated\.pics|shrgo\.net/i.test(url);
+  }
+
+  function looksKickLive(url) {
+    return /live-video\.net/i.test(url || "") && /channel\./i.test(url || "");
   }
 
   function looksImageList(url) {
     return looksImage(url);
   }
 
+  function looksClosePlaylist(url) {
+    return /\/txt\/master\.txt/i.test(url || "");
+  }
+
+  function siblingPlaylist(url) {
+    if (!looksClosePlaylist(url)) {
+      return "";
+    }
+    return String(url).replace(/\/txt\/master\.txt/i, "/master.txt");
+  }
+
+  function looksShortForm(url, page) {
+    page = page || (typeof location !== "undefined" && location.href) || "";
+    return looksInstagram(url) || looksInstagram(page) ||
+      /tiktok/i.test(url || "") || /(?:tiktok\.com|instagram\.com)/i.test(page);
+  }
+
+  function usableMedia(url) {
+    return !!(url && looksMedia(url) && !looksAd(url) && !looksImageList(url) &&
+      !looksClosePlaylist(url) && !looksKickLive(url) && !skipped.has(url) &&
+      !shortMedia.has(url));
+  }
+
+  function rememberShortMedia(url, seconds) {
+    if (!url || looksShortForm(url)) {
+      return;
+    }
+    const duration = Number(seconds);
+    if (!(duration > 0 && duration <= 15)) {
+      return;
+    }
+    shortMedia.add(url);
+    const last = seenMedia.find((item) => item.url === url);
+    if (last) {
+      last.seconds = duration;
+    }
+  }
+
   function looksImage(url) {
     if (typeof url !== "string") {
       return false;
     }
-    if (/\/image\d+\.(jpg|jpeg|png|webp)|\/txt\/master\.txt/i.test(url)) {
+    if (/\/image\d+\.(jpg|jpeg|png|webp)/i.test(url) || (looksClosePlaylist(url) && !/\.(mp4|m3u8|webm|mov)(?:$|\?)/i.test(url))) {
       return true;
     }
     if (/\.(jpg|jpeg|png|webp|gif|heic)(?:$|\?)/i.test(url) && !/\.(mp4|m3u8|webm|mov)(?:$|\?)/i.test(url)) {
@@ -35,7 +79,10 @@
   }
 
   function looksMedia(url) {
-    if (typeof url !== "string" || !/^https?:\/\//i.test(url) || looksCaption(url) || looksImage(url)) {
+    if (typeof url !== "string" || !/^https?:\/\//i.test(url) || looksCaption(url)) {
+      return false;
+    }
+    if (looksImage(url) || looksClosePlaylist(url)) {
       return false;
     }
     if (/(?:\.m3u8|\.m3u|\.mpd|\.mp4|\.mkv|\.webm|\.mov|master\.txt|playlist\.txt)(?:$|\?|\/)/i.test(url)) {
@@ -47,7 +94,7 @@
     if (/(?:scontent|cdninstagram|fbcdn\.net)/i.test(url)) {
       return /\/v\/t16\/|\/v\/t2\/|\/v\/t3\/|\/o1\/v\/|\.mp4|video_dash|dash_audio|mime_type=video|mime_type=audio/i.test(url);
     }
-    return /tiktokcdn|byteoversea|ibyteimg|musical\.ly|googlevideo|live-video\.net|stream\.kick\.com|ttvnw\.net|rumble\.cloud|dmcdn\.net|playmix\.uno/i.test(url);
+    return /tiktokcdn|byteoversea|ibyteimg|musical\.ly|googlevideo|live-video\.net|stream\.kick\.com|ttvnw\.net|rumble\.cloud|dmcdn\.net|playmix\.uno|imagestoo\.com|collaborate\.pics/i.test(url);
   }
 
   function looksInstagram(url) {
@@ -92,6 +139,12 @@
     else if (looksMedia(url)) score += 1800;
     if (looksAd(text) || /timeline|preview|thumb|storyboard|sprite|\.faa\.|\.gaa\.|\/assets\/|\/dist\/|site\.webm/.test(text)) {
       score -= 5000;
+    }
+    if (looksKickLive(url)) {
+      score -= 6000;
+    }
+    if (/stream\.kick\.com\/.+\d{4}\/\d{1,2}\/\d{1,2}\//.test(text)) {
+      score += 2500;
     }
     if (/bytestart|byteend|dashinit|frag_|\bfragment\b|init\.mp4/.test(text)) {
       score -= 4000;
@@ -235,8 +288,28 @@
     return wide >= 240 && tall >= 140 && visibleRatio(node) >= 0.2;
   }
 
+  function isPrerollVideo(node) {
+    if (!node || node.tagName !== "VIDEO") {
+      return false;
+    }
+    if (isAdSurface(node)) {
+      return true;
+    }
+    const href = videoHref(node);
+    const page = (typeof location !== "undefined" && location.href) || "";
+    if (looksShortForm(href, page)) {
+      return false;
+    }
+    if (href && shortMedia.has(href)) {
+      return true;
+    }
+    const duration = Number(node.duration);
+    return Number.isFinite(duration) && duration > 0 && duration <= 15;
+  }
+
   function isWatchVideo(node) {
-    return !!(node && node.tagName === "VIDEO" && !isAdSurface(node) && !isFeedPreview(node) && isLargeEnough(node));
+    return !!(node && node.tagName === "VIDEO" && !isAdSurface(node) && !isFeedPreview(node) &&
+      !isPrerollVideo(node) && isLargeEnough(node));
   }
 
   function isDedicatedPlayer(node) {
@@ -335,6 +408,74 @@
     return Number.isFinite(t) ? t : 0;
   }
 
+  function bindIfPlaying(url) {
+    if (!usableMedia(url)) {
+      return;
+    }
+    const video = currentVideo();
+    if (!video || !isActivePlayback(video)) {
+      return;
+    }
+    const page = (typeof location !== "undefined" && location.href) || "";
+    const duration = Number(video.duration) || 0;
+    if (looksShortAd(url, duration, page)) {
+      return;
+    }
+    const current = videoMedia.get(video);
+    if (current && usableMedia(current) && !looksShortAd(current, duration, page) &&
+        mediaScore(url) <= mediaScore(current) + 200) {
+      return;
+    }
+    videoMedia.set(video, url);
+  }
+
+  function noteMedia(url, live) {
+    const sibling = siblingPlaylist(url);
+    if (sibling && sibling !== url) {
+      noteMedia(sibling, live);
+    }
+    if (!usableMedia(url)) {
+      return;
+    }
+    const now = clockNow();
+    const last = seenMedia[seenMedia.length - 1];
+    if (last && last.url === url) {
+      last.at = now;
+      if (live) {
+        bindIfPlaying(url);
+      }
+      return;
+    }
+    const owners = allVideos().filter((node) => videoHref(node) === url);
+    owners.forEach((node) => rememberShortMedia(url, node.duration));
+    const activePlayers = allVideos().filter((node) => isActivePlayback(node));
+    const onlyShort = activePlayers.length > 0 &&
+      activePlayers.every((node) => isPrerollVideo(node));
+    if (onlyShort && !looksShortForm(url)) {
+      shortMedia.add(url);
+    }
+    seenMedia.push({ url, at: now, seconds: owners.reduce((max, node) => {
+      const next = Number(node.duration) || 0;
+      return next > max ? next : max;
+    }, 0) });
+    if (seenMedia.length > 64) {
+      seenMedia.shift();
+    }
+    if (live) {
+      bindIfPlaying(url);
+    }
+  }
+
+  try {
+    performance.getEntriesByType("resource").forEach((entry) => noteMedia(entry.name, false));
+    if (typeof PerformanceObserver === "function") {
+      new PerformanceObserver((list) => {
+        list.getEntries().forEach((entry) => noteMedia(entry.name, true));
+      }).observe({ type: "resource", buffered: false });
+    }
+  } catch {
+  }
+
   function clockNow() {
     try {
       return typeof performance !== "undefined" && typeof performance.now === "function"
@@ -372,7 +513,67 @@
     return score > 0 ? best : "";
   }
 
+  let instagramPageCache = { key: "", url: "" };
+
+  function instagramPageMedia() {
+    const page = (typeof location !== "undefined" && location.href) || "";
+    const match = page.match(/instagram\.com\/reels?\/([^/?#]+)/i);
+    const code = match && match[1] ? match[1] : "";
+    if (!code || typeof document === "undefined") {
+      return "";
+    }
+    if (instagramPageCache.key === code) {
+      return instagramPageCache.url;
+    }
+    instagramPageCache = { key: code, url: "" };
+    const scripts = Array.prototype.slice.call(document.scripts || []);
+    for (let i = 0; i < scripts.length; i++) {
+      const text = (scripts[i] && scripts[i].textContent) || "";
+      if (!text.includes(code) || !/video_versions|videoVersions/.test(text)) {
+        continue;
+      }
+      let root;
+      try {
+        root = JSON.parse(text);
+      } catch {
+        continue;
+      }
+      const stack = [root];
+      let visited = 0;
+      while (stack.length && visited++ < 100000) {
+        const value = stack.pop();
+        if (!value || typeof value !== "object") {
+          continue;
+        }
+        const versions = value.video_versions || value.videoVersions;
+        if ((value.code === code || value.shortcode === code) && Array.isArray(versions)) {
+          const urls = versions.map((item) => stripByteRange(item && (item.url || item.src))).filter(usableMedia);
+          const picked = pickMedia(urls);
+          if (picked) {
+            instagramPageCache.url = picked;
+            return picked;
+          }
+        }
+        Object.keys(value).forEach((key) => {
+          const child = value[key];
+          if (child && typeof child === "object") {
+            stack.push(child);
+          }
+        });
+      }
+    }
+    return "";
+  }
+
   function bindInstagram(video) {
+    // Dedicated Reel pages carry the exact shortcode -> media mapping in
+    // their bootstrapped data. Prefer that deterministic association over a
+    // nearby preloaded feed item from the resource timing buffer.
+    const fromPage = instagramPageMedia();
+    if (fromPage) {
+      videoMedia.set(video, fromPage);
+      return fromPage;
+    }
     const used = usedMedia(video);
     const origin = playAt.has(video) ? playAt.get(video) : clockNow();
     const from = origin - 4000;
@@ -522,13 +723,21 @@
 
   function sourcesForFrame(frame) {
     const media = [];
-    try {
-      performance.getEntriesByType("resource").forEach((entry) => {
-        if (looksMedia(entry.name) && !looksAd(entry.name) && !skipped.has(entry.name)) {
-          add(media, entry.name);
-        }
-      });
-    } catch {
+    const origin = Math.max(0, clockNow() - 15000);
+    seenMedia.forEach((item) => {
+      if (item.at >= origin) {
+        add(media, item.url);
+      }
+    });
+    if (!media.length) {
+      try {
+        performance.getEntriesByType("resource").forEach((entry) => {
+          if (usableMedia(entry.name)) {
+            add(media, entry.name);
+          }
+        });
+      } catch {
+      }
     }
     const primary = pickPrimary(media);
     const ordered = [];
@@ -560,12 +769,32 @@
     return frame.getBoundingClientRect ? frame.getBoundingClientRect() : { width: 0, height: 0 };
   }
 
+  function frameHref(frame) {
+    if (!frame) {
+      return "";
+    }
+    const lazy = (frame.getAttribute &&
+      (frame.getAttribute("data-src") || frame.getAttribute("data-lazy-src") || frame.getAttribute("data-url"))) || "";
+    const src = (frame.getAttribute && frame.getAttribute("src")) || frame.src || "";
+    if (/^https?:\/\//i.test(lazy) &&
+        (!/^https?:\/\//i.test(src) || src === location.href || src === location.origin + "/")) {
+      return lazy;
+    }
+    return /^https?:\/\//i.test(src) ? src : lazy;
+  }
+
+  function isSearchPage() {
+    return /(?:^|\.)(google\.|bing\.|duckduckgo\.|search\.yahoo\.)/i.test(
+      (typeof location !== "undefined" && location.hostname) || ""
+    );
+  }
+
   function playerIframes() {
-    if (typeof document === "undefined" || !document.querySelectorAll) {
+    if (typeof document === "undefined" || !document.querySelectorAll || isSearchPage()) {
       return [];
     }
     return Array.prototype.slice.call(document.querySelectorAll("iframe")).filter((frame) => {
-      const src = frame.src || (frame.getAttribute && frame.getAttribute("data-src")) || "";
+      const src = frameHref(frame);
       const mark = src + " " + ((frame.className && frame.className.toString()) || "") + " " +
         (frame.id || "") + " " + (frame.title || "") + ancestorMark(frame);
       const box = frameBox(frame);
@@ -575,11 +804,35 @@
       if (/recaptcha|doubleclick|googletagmanager|facebook\.com\/tr/i.test(mark)) {
         return false;
       }
-      if (/embed|player|video|rapidrame|watch|playturka|aspect-video|group\/player|player-container|video-player/i.test(mark)) {
+      if (/embed|player|video|vod|rapidvid|rapidrame|watch|playturka|aspect-video|group\/player|player-container|video-player/i.test(mark)) {
         return true;
       }
       return box.width >= 400 && box.height >= 200;
     });
+  }
+
+  function isConfiguredPlayer(node) {
+    if (!node || !node.getAttribute || node.tagName === "VIDEO" || node.tagName === "IFRAME" || isAdSurface(node)) {
+      return false;
+    }
+    const encoded = node.getAttribute("data-cfg") || node.getAttribute("data-config") || "";
+    const ajaxPlayer = node.getAttribute("data-post-id") && node.getAttribute("data-player-name");
+    if (!encoded && !ajaxPlayer) {
+      return false;
+    }
+    const mark = ((node.className && node.className.toString()) || "") + " " + (node.id || "") + ancestorMark(node);
+    const box = node.getBoundingClientRect ? node.getBoundingClientRect() : { width: 0, height: 0 };
+    return /player|video|watch|embed|loadingiframe|fimcnt/i.test(mark) && box.width >= 240 && box.height >= 140;
+  }
+
+  function configuredPlayerSurfaces() {
+    if (typeof document === "undefined" || !document.querySelectorAll) {
+      return [];
+    }
+    return Array.prototype.slice.call(document.querySelectorAll(
+      "[data-cfg], [data-config], [data-post-id][data-player-name]"
+    )).filter(isConfiguredPlayer).sort((a, b) =>
+      (b.clientWidth * b.clientHeight) - (a.clientWidth * a.clientHeight));
   }
 
   function activate(node) {
@@ -639,7 +892,10 @@
       if (/player|video-js|jwplayer|plyr|video-container|play-that-video|hdmv-play|movie_player/i.test(mark)) {
         const innerVideo = node.querySelector && node.querySelector("video");
         const iframe = node.querySelector && node.querySelector("iframe");
-        return innerVideo || iframe || node;
+        if (innerVideo && !isPrerollVideo(innerVideo)) {
+          return innerVideo;
+        }
+        return iframe || (isConfiguredPlayer(node) ? node : (innerVideo || node));
       }
       node = node.parentElement;
     }
@@ -656,7 +912,9 @@
   }
 
   function isImmediateHost(host) {
-    return /(?:^|\.)(kick\.com|twitch\.tv)$/i.test(host || (typeof location !== "undefined" ? location.hostname : "") || "");
+    return /(?:^|\.)(kick\.com|twitch\.tv|dailymotion\.com|dai\.ly|rumble\.com)$/i.test(
+      host || (typeof location !== "undefined" ? location.hostname : "") || ""
+    );
   }
 
   function isPlayingNode(node) {
@@ -692,8 +950,16 @@
       active = videos[0];
       return [videos[0]];
     }
+    const configured = configuredPlayerSurfaces();
+    if (configured[0]) {
+      active = configured[0];
+      return [configured[0]];
+    }
+    if (!isImmediateHost() && !childPlaying) {
+      return [];
+    }
     const frames = playerIframes();
-    if (frames[0] && childPlaying) {
+    if (frames[0]) {
       active = frames[0];
       return [frames[0]];
     }
@@ -709,7 +975,81 @@
     return surface && surface.tagName === "VIDEO" ? surface : null;
   }
 
-  function pickTransfer(playing, sources, page, catalog, liveCatalog) {
+  function currentVideo() {
+    const playing = allVideos().filter((node) => isWatchVideo(node) && isActivePlayback(node));
+    if (playing.length) {
+      playing.sort((left, right) => {
+        const duration = (Number(right.duration) || 0) - (Number(left.duration) || 0);
+        if (Math.abs(duration) > 1) {
+          return duration;
+        }
+        return (right.currentTime || 0) - (left.currentTime || 0);
+      });
+      return playing[0];
+    }
+    return mainVideo();
+  }
+
+  function mediaForVideo(video) {
+    if (!video) {
+      return "";
+    }
+    const own = videoHref(video);
+    if (usableMedia(own) && mediaScore(own) > 0) {
+      videoMedia.set(video, own);
+      return own;
+    }
+    rememberVideoMedia(video);
+    const cached = videoMedia.get(video);
+    if (usableMedia(cached) && looksInstagram(cached)) {
+      return cached;
+    }
+    const page = (typeof location !== "undefined" && location.href) || "";
+    const duration = Number(video.duration) || 0;
+    const origin = playAt.has(video) ? playAt.get(video) : Math.max(0, clockNow() - 30000);
+    const used = usedMedia(video);
+    const urls = seenMedia.filter((item) =>
+      item.at >= origin - 8000 &&
+      usableMedia(item.url) &&
+      !used.has(item.url) &&
+      !looksShortAd(item.url, duration, page)
+    ).map((item) => item.url);
+    const picked = pickMedia(urls);
+    if (picked) {
+      videoMedia.set(video, picked);
+      return picked;
+    }
+    if (usableMedia(cached) && !looksShortAd(cached, duration, page)) {
+      return cached;
+    }
+    return "";
+  }
+
+  function looksShortAd(url, duration, page) {
+    if (looksAd(url) || looksClosePlaylist(url) || looksImageList(url) || shortMedia.has(url)) {
+      return true;
+    }
+    const kickVod = /kick\.com\/[^/]+\/videos\/|kick\.com\/video\//i.test(page || "");
+    if (kickVod && looksKickLive(url)) {
+      return true;
+    }
+    if (looksShortForm(url, page)) {
+      return false;
+    }
+    if (kickVod && duration > 0 && duration < 180) {
+      return true;
+    }
+    return duration > 0 && duration <= 15;
+  }
+
+  function usesPageFallback(page) {
+    if (/(?:youtube\.com|youtu\.be|twitch\.tv|rumble\.com|dailymotion\.com|dai\.ly)/i.test(page || "")) {
+      return true;
+    }
+    return /kick\.com/i.test(page || "");
+  }
+
+  function pickTransfer(playing, sources, page, catalog, liveCatalog, duration) {
     const pageUrl = (page || "").split("?")[0];
     if (liveCatalog) {
       return pageUrl;
@@ -717,15 +1057,24 @@
     const urls = [];
     add(urls, playing);
     (sources || []).forEach((item) => add(urls, item && item.url ? item.url : item));
-    const clean = urls.filter((url) => !looksAd(url) && !skipped.has(url) && !looksImageList(url));
+    const kickVod = /kick\.com\/[^/]+\/videos\/|kick\.com\/video\//i.test(page || "");
+    if (playing && !skipped.has(playing) && !looksShortAd(playing, duration, page) &&
+        looksMedia(playing) && mediaScore(playing) > 0) {
+      return playing;
+    }
+    const clean = urls.filter((url) =>
+      !looksShortAd(url, 0, page) &&
+      !skipped.has(url) &&
+      !looksImageList(url) &&
+      !(kickVod && looksKickLive(url)));
     const picked = pickMedia(clean);
     if (picked) {
       return picked;
     }
-    if (catalog) {
+    if (usesPageFallback(page)) {
       return pageUrl;
     }
-    return pickMedia(urls.filter((url) => !skipped.has(url))) || pageUrl;
+    return "";
   }
 
   function sniff(target) {
@@ -733,21 +1082,33 @@
     const page = (typeof location !== "undefined" && location.href) || "";
     const catalog = isCatalogHost(host);
     const kind = pageKind(page);
-    const chosen = target || activeSurface();
-    const video = chosen && chosen.tagName === "VIDEO" ? chosen : mainVideo();
+    const supplied = target && (
+      (target.tagName === "VIDEO" && isUsableVideo(target)) ||
+      target.tagName === "IFRAME" ||
+      isConfiguredPlayer(target)
+    ) ? target : null;
+    const surfaced = activeSurface();
+    const usableActive = surfaced && (
+      (surfaced.tagName === "VIDEO" && isUsableVideo(surfaced)) ||
+      surfaced.tagName === "IFRAME" ||
+      isConfiguredPlayer(surfaced)
+    ) ? surfaced : null;
+    const chosen = supplied || currentVideo() || usableActive || configuredPlayerSurfaces()[0] || playerIframes()[0];
+    const video = chosen && chosen.tagName === "VIDEO" ? chosen : currentVideo();
     rememberVideoMedia(video);
     const frame = chosen && chosen.tagName === "IFRAME" ? chosen : null;
+    const frameUrl = frame ? frameHref(frame) : "";
     const liveCatalog = catalog && kind === "live";
     const sources = liveCatalog ? [] : (frame ? sourcesForFrame(frame) : sourcesFor(video));
-    const playing = videoHref(video);
+    const playing = mediaForVideo(video) || videoHref(video);
     const pageUrl = page.split("?")[0];
-    const playUrl = pickTransfer(playing, sources, page, catalog, liveCatalog);
-    const duration = video && Number.isFinite(video.duration) && video.duration > 0 && video.duration < 86400
+    const duration = video && Number.isFinite(video.duration) && video.duration > 0 && video.duration < 604800
       ? video.duration
       : 0;
+    const playUrl = pickTransfer(playing, sources, page, catalog, liveCatalog, duration);
     return {
-      watchUrl: catalog ? pageUrl : (playUrl || page),
-      url: playUrl,
+      watchUrl: playUrl || frameUrl || (usesPageFallback(page) ? pageUrl : page),
+      url: playUrl || frameUrl,
       pageUrl: page,
       title: (typeof document !== "undefined" && document.title) || "",
       kind: liveCatalog ? "live" : "vod",
@@ -756,11 +1117,17 @@
       sources,
       captionTracks: [],
       duration,
+      hasPreroll: allVideos().some((node) => isPrerollVideo(node)),
       audioUrl: (video && videoSound.get(video)) || "",
       ad: !!(playUrl && looksAd(playUrl)),
+      playingNow: !!(video && isActivePlayback(video)),
       canSkip: sources.some((item) => item.url && item.url !== playUrl && !looksAd(item.url) && !skipped.has(item.url)) ||
         !!(playUrl && looksAd(playUrl))
     };
+  }
+
+  function current() {
+    return sniff(currentVideo() || activeSurface() || playerIframes()[0]);
   }
 
   function hasTransferable(info) {
@@ -817,6 +1184,36 @@
     reportPlaying();
   }
 
+  function onDuration(event) {
+    const video = event && event.target;
+    if (!video || video.tagName !== "VIDEO") {
+      return;
+    }
+    rememberShortMedia(videoHref(video), video.duration);
+    if (video.duration > 0 && video.duration <= 15 && !looksShortForm(videoHref(video))) {
+      videoMedia.delete(video);
+      return;
+    }
+    if (video.duration >= 90) {
+      activate(video);
+      const bound = videoMedia.get(video);
+      const page = (typeof location !== "undefined" && location.href) || "";
+      if (!bound || looksShortAd(bound, 12, page)) {
+        mediaForVideo(video);
+      }
+    }
+    reportPlaying();
+  }
+
+  function onEmptied(event) {
+    const video = event && event.target;
+    if (!video || video.tagName !== "VIDEO") {
+      return;
+    }
+    videoMedia.delete(video);
+    videoSound.delete(video);
+  }
+
   if (typeof window !== "undefined" && window.addEventListener) {
     window.addEventListener("message", (event) => {
       if (!event || !event.data || event.data.type !== "grokplayer-playing") {
@@ -836,15 +1233,28 @@
     document.addEventListener("pointerdown", onPointer, true);
     document.addEventListener("click", onPointer, true);
     document.addEventListener("play", onPlay, true);
+    document.addEventListener("loadedmetadata", onDuration, true);
+    document.addEventListener("durationchange", onDuration, true);
+    document.addEventListener("emptied", onEmptied, true);
   }
 
   window.GrokPlayerSniff = Object.assign(sniff, {
     looksMedia,
     looksAudioOnly,
     looksInstagram,
+    instagramPageMedia,
     markPlayed,
     looksCaption,
     looksAd,
+    looksKickLive,
+    looksClosePlaylist,
+    siblingPlaylist,
+    usableMedia,
+    looksShortAd,
+    looksShortForm,
+    isPrerollVideo,
+    rememberShortMedia,
+    isSearchPage,
     looksImageList,
     looksImage,
     mediaScore,
@@ -863,6 +1273,8 @@
     collectVideos,
     playerRoot,
     playerIframes,
+    isConfiguredPlayer,
+    configuredPlayerSurfaces,
     mainVideo,
     primarySurfaces,
     activeSurface,
@@ -880,13 +1292,21 @@
     sourcesFor,
     sourcesForFrame,
     sniff,
+    current,
+    currentVideo,
+    mediaForVideo,
     hasTransferable
   });
 
   if (chrome && chrome.runtime && chrome.runtime.onMessage) {
     chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+      if (message && message.type === "network-media") {
+        childPlaying = true;
+        sendResponse({ ok: true });
+        return true;
+      }
       if (message && message.type === "sniff") {
-        sendResponse(sniff());
+        sendResponse(current());
         return true;
       }
       if (message && message.type === "skip-url") {

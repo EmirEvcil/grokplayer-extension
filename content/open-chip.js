@@ -27,13 +27,8 @@
 
   function launch() {
     const api = sniffApi();
-    const target = surfaces()[0] || current;
-    const sniffed = api ? api(target) : null;
-    if (sniffed && (sniffed.watchUrl || sniffed.url)) {
-      chrome.runtime.sendMessage({ type: "open-url", info: sniffed, play: settings.autoPlay !== false });
-      return;
-    }
-    chrome.runtime.sendMessage({ type: "open-active" });
+    const sniffed = api && typeof api.current === "function" ? api.current() : (api ? api() : null);
+    chrome.runtime.sendMessage({ type: "open-url", info: sniffed || {}, play: settings.autoPlay !== false });
   }
 
   function skip(target) {
@@ -90,24 +85,19 @@
       ui.hide();
       return;
     }
-    const target = surfaces()[0] || (current && current.isConnected !== false ? current : null);
+    const target = surfaces()[0] || null;
     const chipGone = !document.getElementById("grokplayer-chip");
-    if (target) {
-      current = target;
-      if (chipGone) {
-        mount(target);
-        return;
-      }
-      ui.place(target);
+    if (!target) {
+      current = null;
+      ui.hide();
       return;
     }
-    if (current && chipGone) {
-      mount(current);
+    current = target;
+    if (chipGone) {
+      mount(target);
       return;
     }
-    if (current) {
-      ui.place(current);
-    }
+    ui.place(target);
   }
 
   let timer = 0;

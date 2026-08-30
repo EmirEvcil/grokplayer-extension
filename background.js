@@ -23,7 +23,19 @@ function isCatalogUrl(url) {
 }
 
 function looksAd(url) {
-  return /doubleclick|googlesyndication|imasdk|adsystem|\/ads?\/|preroll|vast|spotx|pubads|adnxs|advert|promo|\/rekla\/|reklam|xpartner|dmxleo/i.test(url || "");
+  return /doubleclick|googlesyndication|imasdk|adsystem|\/ads?\/|preroll|vast|spotx|pubads|adnxs|advert|promo|\/rekla\/|reklam|xpartner|dmxleo|clips\.kick|\/clips?\/|bumper|marmorated\.pics|shrgo\.net/i.test(url || "");
+}
+
+function kickVodPage(url) {
+  return /kick\.com\/[^/]+\/videos\/|kick\.com\/video\//i.test(url || "");
+}
+
+function looksKickLive(url) {
+  return /live-video\.net/i.test(url || "") && /channel\./i.test(url || "");
+}
+
+function looksClosePlaylist(url) {
+  return /\/txt\/master\.txt/i.test(url || "");
 }
 
 function looksImageList(url) {
@@ -37,7 +49,10 @@ function looksImageList(url) {
 }
 
 function looksMedia(url) {
-  if (!url || !/^https?:\/\//i.test(url) || looksImageList(url)) {
+  if (!url || !/^https?:\/\//i.test(url)) {
+    return false;
+  }
+  if (looksImageList(url) || looksClosePlaylist(url)) {
     return false;
   }
   if (/(?:\.m3u8|\.m3u|\.mpd|\.mp4|\.mkv|\.webm|\.mov|master\.txt|playlist\.txt)(?:$|\?|\/)/i.test(url)) {
@@ -46,7 +61,31 @@ function looksMedia(url) {
   if (/(?:scontent|cdninstagram|fbcdn\.net)/i.test(url)) {
     return /\/v\/t16\/|\/v\/t2\/|\/v\/t3\/|\/o1\/v\/|\.mp4|video_dash|dash_audio|mime_type=video|mime_type=audio/i.test(url);
   }
-  return /tiktokcdn|byteoversea|googlevideo|live-video\.net|stream\.kick\.com|ttvnw\.net|rumble\.cloud|hls-vod|mime_type=video|dmcdn\.net|playmix\.uno|\/hls\//i.test(url);
+  return /tiktokcdn|byteoversea|googlevideo|live-video\.net|stream\.kick\.com|ttvnw\.net|rumble\.cloud|hls-vod|mime_type=video|dmcdn\.net|playmix\.uno|imagestoo\.com|collaborate\.pics|\/hls\//i.test(url);
+}
+
+function looksProtectedMedia(url) {
+  const text = String(url || "");
+  return /\/manifests\/[^?#]+\/master\.(?:txt|m3u8)(?:\?|$)/i.test(text) &&
+    /(?:[?&]verify=|fastplay\.)/i.test(text);
+}
+
+function responseHeader(headers, name) {
+  const wanted = String(name || "").toLowerCase();
+  const hit = (headers || []).find((item) => String(item && item.name || "").toLowerCase() === wanted);
+  return String(hit && hit.value || "").toLowerCase();
+}
+
+function looksMediaResponse(url, headers) {
+  const type = responseHeader(headers, "content-type").split(";")[0].trim();
+  if (/^(?:application|audio)\/(?:vnd\.apple\.|x-)?mpegurl$/.test(type) || type === "application/dash+xml") {
+    return true;
+  }
+  if (!/^video\/(?:mp4|webm|quicktime|ogg)$/.test(type)) {
+    return false;
+  }
+  // Do not promote individual MSE fragments into standalone videos.
+  return !/(?:^|[\/_-])(?:seg(?:ment)?|chunk|frag(?:ment)?|init)(?:[\/_\-.]|$)|\b(?:bytestart|byteend)=/i.test(url || "");
 }
 
 const playingByTab = new Map();
@@ -63,8 +102,14 @@ function usesPageCatalog(url) {
   if (/twitch\.tv/i.test(url || "")) {
     return true;
   }
+  if (/rumble\.com/i.test(url || "")) {
+    return true;
+  }
+  // Kick VOD pages expose live-channel and ad requests alongside the actual
+  // recording. Always let the desktop catalog resolve the page through
+  // Kick's playback API instead of promoting a browser request.
   if (/kick\.com/i.test(url || "")) {
-    return pageKindFromUrl(url) === "live";
+    return true;
   }
   return false;
 }
@@ -102,9 +147,13 @@ function looksAudioOnly(url) {
   return /dash[_-]?audio|audio[_-]?dash|mime_type=audio|_audio|\/audio\/|heaac|mp4a/i.test(url || "");
 }
 
-function rememberNetwork(tabId, url, pageUrl) {
+function rememberNetwork(tabId, url, pageUrl, responseHeaders, referrerPage) {
   url = stripByteRange(url);
-  if (!tabId || tabId < 0 || !looksMedia(url) || looksAd(url) || looksImageList(url) || looksAudioOnly(url)) {
+  const detectedMedia = looksMedia(url) || looksMediaResponse(url, responseHeaders);
+  if (!tabId || tabId < 0 || !detectedMedia || looksAd(url) || looksImageList(url) || looksAudioOnly(url)) {
+    return;
+  }
+  if (kickVodPage(pageUrl) && looksKickLive(url)) {
     return;
   }
   if (pageUrl && usesPageCatalog(pageUrl)) {
@@ -112,18 +161,67 @@ function rememberNetwork(tabId, url, pageUrl) {
   }
   const list = mediaByTab.get(tabId) || [];
   const next = list.filter((item) => item.url !== url);
-  next.push({ url, at: Date.now() });
-  mediaByTab.set(tabId, next.slice(-16));
+  next.push({
+    url,
+    at: Date.now(),
+    page: pageUrl || "",
+    referrer: /^https?:\/\//i.test(referrerPage || "") ? referrerPage : (pageUrl || ""),
+    detectedMedia
+  });
+  // A MediaSource player usually requests its master manifest only once. Keep
+  // enough navigation-scoped history for the user to press Open later; the
+  // whole bucket is cleared as soon as the top-level tab navigates.
+  mediaByTab.set(tabId, next.slice(-64));
+  // Header-based detection also covers extensionless manifests that the page
+  // script cannot identify from the URL alone. Wake the top-frame chip; the
+  // actual URL remains in the privileged background candidate store.
+  try {
+    const signal = chrome.tabs.sendMessage(tabId, { type: "network-media" });
+    if (signal && typeof signal.catch === "function") {
+      signal.catch(() => {});
+    }
+  } catch {
+  }
 }
 
-function latestNetwork(tabId) {
+function networkScore(url, detectedMedia) {
+  const text = String(url || "").toLowerCase();
+  let score = (looksMedia(url) || detectedMedia) ? 5 : 0;
+  if (looksAd(url) || looksKickLive(url)) {
+    return -1;
+  }
+  if (/stream\.kick\.com\/.+\d{4}\/\d{1,2}\/\d{1,2}\//.test(text)) {
+    score += 8;
+  }
+  if (/\.m3u8|\/hls\//.test(text)) {
+    score += 3;
+  }
+  return score;
+}
+
+function latestNetwork(tabId, pageUrl) {
   const list = mediaByTab.get(tabId) || [];
-  for (let i = list.length - 1; i >= 0; i--) {
-    if (looksMedia(list[i].url) && !tabSkipped(tabId).has(list[i].url)) {
-      return list[i];
+  const now = Date.now();
+  let best = null;
+  let score = 0;
+  for (let i = 0; i < list.length; i++) {
+    const item = list[i];
+    if (!item.detectedMedia || tabSkipped(tabId).has(item.url)) {
+      continue;
+    }
+    if (now - item.at > 10 * 60 * 1000) {
+      continue;
+    }
+    if (pageUrl && item.page && item.page !== pageUrl) {
+      continue;
+    }
+    const next = networkScore(item.url, item.detectedMedia);
+    if (next > score) {
+      score = next;
+      best = item;
     }
   }
-  return null;
+  return best;
 }
 
 function tabSkipped(tabId) {
@@ -135,16 +233,40 @@ function tabSkipped(tabId) {
   return set;
 }
 
-function rememberPlaying(tabId, info) {
+function rememberPlaying(tabId, info, pageUrl, frameId) {
   if (!tabId || !info) {
     return;
   }
-  playingByTab.set(tabId, { info, at: Date.now() });
+  if (isPrerollInfo(info)) {
+    if (info.url) {
+      tabSkipped(tabId).add(info.url);
+    }
+    return;
+  }
+  playingByTab.set(tabId, {
+    info: { ...info, reportedPlaying: true },
+    at: Date.now(),
+    page: pageUrl || "",
+    frameId: Number.isInteger(frameId) ? frameId : -1
+  });
 }
 
-function recentPlaying(tabId) {
+function sameTopPage(left, right) {
+  if (!left || !right) {
+    return true;
+  }
+  try {
+    const a = new URL(left);
+    const b = new URL(right);
+    return a.origin === b.origin && a.pathname === b.pathname;
+  } catch {
+    return left === right;
+  }
+}
+
+function recentPlaying(tabId, pageUrl) {
   const hit = playingByTab.get(tabId);
-  if (!hit || Date.now() - hit.at > 120000) {
+  if (!hit || Date.now() - hit.at > 10 * 60 * 1000 || !sameTopPage(hit.page, pageUrl)) {
     return null;
   }
   return hit.info;
@@ -154,16 +276,38 @@ function betterInfo(left, right, tabId) {
   const skipped = tabSkipped(tabId);
   const score = (info) => {
     const url = info && info.url ? info.url : "";
-    if (!url || skipped.has(url) || looksImageList(url)) {
+    if (embeddedPlayerPage(info)) {
+      return 3;
+    }
+    if (!url || skipped.has(url) || looksImageList(url) || looksClosePlaylist(url) || isPrerollInfo(info)) {
       return -1;
     }
     if (looksAd(url)) {
       return looksMedia(url) ? 1 : 0;
     }
-    return looksMedia(url) ? 5 : (info && info.watchUrl ? 2 : 0);
+    let next = (looksMedia(url) || (info && info.detectedMedia)) ? 5 : (info && info.watchUrl ? 2 : 0);
+    const duration = Number(info && info.duration) || 0;
+    if (info && info.reportedPlaying) {
+      next += 30;
+    }
+    if (info && info.playingNow) {
+      next += 20;
+    }
+    if (duration >= 300) {
+      next += 15;
+    } else if (duration > 0 && duration <= 15 && !looksShortForm(url, info && (info.pageUrl || info.watchUrl))) {
+      next -= 4;
+    }
+    if (/master(?:\.m3u8|\.txt)|playlist\.m3u8/i.test(url)) {
+      next += 4;
+    }
+    if (info && info.capturedFrom === "network") {
+      next += 2;
+    }
+    return next;
   };
   if (!left) {
-    return right;
+    return score(right) >= 0 ? right : null;
   }
   if (!right) {
     return left;
@@ -190,9 +334,12 @@ function protocol(info, play) {
   const params = new URLSearchParams();
   const page = info.pageUrl || info.tabUrl || info.watchUrl || "";
   const catalog = catalogPage(info);
-  const media = !catalog && looksMedia(info.url) ? info.url : "";
+  const embedded = !catalog ? embeddedPlayerPage(info) : "";
+  const media = !catalog && !embedded && (looksMedia(info.url) || info.detectedMedia) ? info.url : "";
   if (catalog) {
     params.set("url", catalog);
+  } else if (embedded) {
+    params.set("url", embedded);
   } else if (media) {
     params.set("url", media);
     if (page && page !== media) {
@@ -299,12 +446,30 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function looksShortForm(url, page) {
+  return /(?:instagram\.com|cdninstagram|scontent|tiktok)/i.test((url || "") + " " + (page || ""));
+}
+
+function isPrerollInfo(info) {
+  if (!info) {
+    return false;
+  }
+  if (looksAd(info.url) || looksImageList(info.url) || looksClosePlaylist(info.url)) {
+    return true;
+  }
+  const duration = Number(info.duration) || 0;
+  if (duration > 0 && duration <= 15 && !looksShortForm(info.url, info.pageUrl || info.watchUrl)) {
+    return true;
+  }
+  return false;
+}
+
 function transferable(info) {
-  return !!(info && looksMedia(info.url) && !looksAd(info.url) && !looksImageList(info.url));
+  return !!(info && (looksMedia(info.url) || info.detectedMedia) && !looksAd(info.url) && !looksImageList(info.url) && !isPrerollInfo(info));
 }
 
 async function collectSniff(tab) {
-  let best = null;
+  let best = betterInfo(null, recentPlaying(tab.id, tab.url), tab.id);
   try {
     const existing = await chrome.tabs.sendMessage(tab.id, { type: "sniff" });
     best = betterInfo(best, existing, tab.id);
@@ -318,7 +483,13 @@ async function collectSniff(tab) {
     });
     const sniffed = await chrome.scripting.executeScript({
       target: { tabId: tab.id, allFrames: true },
-      func: () => (window.GrokPlayerSniff ? window.GrokPlayerSniff() : null)
+      func: () => {
+        const api = window.GrokPlayerSniff;
+        if (!api) {
+          return null;
+        }
+        return typeof api.current === "function" ? api.current() : api();
+      }
     });
     (sniffed || []).forEach((item) => {
       best = betterInfo(best, item && item.result, tab.id);
@@ -326,19 +497,39 @@ async function collectSniff(tab) {
   } catch {
   }
 
-  const net = latestNetwork(tab.id);
+  if (best && best.playingNow && !isPrerollInfo(best)) {
+    return best;
+  }
+
+  const net = latestNetwork(tab.id, tab.url);
   if (net) {
-    best = betterInfo(best, {
+    const networkInfo = {
       url: net.url,
-      pageUrl: tab.url,
+      pageUrl: net.referrer || tab.url,
       watchUrl: tab.url,
       kind: "vod",
-      title: tab.title
-    }, tab.id);
+      title: tab.title,
+      capturedFrom: "network",
+      detectedMedia: true
+    };
+    // MSE/blob players expose duration and playback state through <video>,
+    // while the transferable URL only exists in webRequest history. Join the
+    // two observations instead of treating them as unrelated candidates.
+    if (best && best.playingNow && !transferable(best) && !isPrerollInfo(best)) {
+      best = {
+        ...best,
+        ...networkInfo,
+        duration: best.duration,
+        playingNow: true,
+        reportedPlaying: !!best.reportedPlaying
+      };
+    } else {
+      best = betterInfo(best, networkInfo, tab.id);
+    }
   }
 
   const skipped = tabSkipped(tab.id);
-  if (best && best.url && (skipped.has(best.url) || looksAd(best.url) || looksImageList(best.url))) {
+  if (best && best.url && (skipped.has(best.url) || looksAd(best.url) || looksImageList(best.url) || isPrerollInfo(best) || (kickVodPage(tab.url) && looksKickLive(best.url)))) {
     const alts = (best.mediaUrls || []).filter((url) => url && !skipped.has(url) && looksMedia(url) && !looksAd(url));
     if (alts[0]) {
       best = { ...best, url: alts[0], ad: false };
@@ -364,8 +555,8 @@ async function sniffTab(tab) {
   }
 
   let best = await collectSniff(tab);
-  for (let attempt = 0; attempt < 3 && !transferable(best); attempt++) {
-    await sleep(400);
+  for (let attempt = 0; attempt < 10 && !transferable(best); attempt++) {
+    await sleep(500);
     best = await collectSniff(tab);
   }
   return best;
@@ -418,11 +609,38 @@ async function openTab(tab, play, overrides) {
   }
 
   const url = tab.url || "";
-  if (/kick\.com|twitch\.tv|youtu(\.be|be\.com)/i.test(url)) {
-    return launchViaHelper({ tabUrl: url, title: tab.title || url }, play, overrides);
+  if (/^https?:\/\//i.test(url)) {
+    // The desktop catalog can recursively resolve embedded/packed players
+    // even when Chrome has not exposed a transferable media request yet.
+    return launchViaHelper({ tabUrl: url, watchUrl: url, url, title: tab.title || url }, play, overrides);
   }
 
   return { ok: false, reason: "no-stream" };
+}
+
+function embeddedPlayerPage(info) {
+  if (!info) {
+    return "";
+  }
+  const watch = info.watchUrl || "";
+  const page = info.pageUrl || "";
+  // Some HLS players attach a per-request proof header in page JavaScript.
+  // Passing their manifest directly loses that proof; pass the HTML player to
+  // the desktop resolver so it can reproduce the protected request flow.
+  if (looksProtectedMedia(info.url) && /^https?:\/\//i.test(page) && !looksMedia(page)) {
+    return page;
+  }
+  // A visible player iframe is a resolvable HTML page, not media. Preserve it
+  // rather than replacing it with a later network request from an ad.
+  if (/^https?:\/\//i.test(watch) && !looksMedia(watch) && watch !== page) {
+    return watch;
+  }
+  // Some players expose only a dedicated preroll <video>; their real source
+  // is encoded in the containing page configuration.
+  if (info.hasPreroll && !transferable(info) && /^https?:\/\//i.test(page) && !looksMedia(page)) {
+    return page;
+  }
+  return "";
 }
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -432,7 +650,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message.type === "playing") {
     const tabId = sender && sender.tab && sender.tab.id;
-    rememberPlaying(tabId, message.info);
+    rememberPlaying(tabId, message.info, sender && sender.tab && sender.tab.url, sender && sender.frameId);
     sendResponse({ ok: true });
     return;
   }
@@ -465,16 +683,49 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         }, message.play !== false, { subPref: "auto" }));
         return;
       }
-      if (transferable(incoming)) {
-        sendResponse(await launchViaHelper(incoming, message.play !== false, { subPref: "auto" }));
+      const embeddedPage = embeddedPlayerPage(incoming);
+      if (embeddedPage) {
+        sendResponse(await launchViaHelper({
+          ...incoming,
+          url: embeddedPage,
+          watchUrl: embeddedPage,
+          pageUrl: page,
+          kind: incoming.kind || "vod"
+        }, message.play !== false, { subPref: "auto" }));
         return;
       }
       const sniffed = tab ? await sniffTab(tab) : null;
-      sendResponse(await launchViaHelper(
-        betterInfo(sniffed, incoming, tab && tab.id) || sniffed || incoming,
-        message.play !== false,
-        { subPref: "auto" }
-      ));
+      const reported = tab ? recentPlaying(tab.id, tab.url) : null;
+      let best = betterInfo(null, incoming, tab && tab.id);
+      best = betterInfo(best, reported, tab && tab.id);
+      best = betterInfo(best, sniffed, tab && tab.id);
+      const target = (best && (best.watchUrl || best.pageUrl || best.url)) || page;
+      if (usesPageCatalog(target)) {
+        const watch = catalogUrl(best && best.watchUrl ? best.watchUrl : target);
+        sendResponse(await launchViaHelper({
+          ...best,
+          url: watch,
+          watchUrl: watch,
+          kind: (best && best.kind) || pageKindFromUrl(target)
+        }, message.play !== false, { subPref: "auto" }));
+        return;
+      }
+      if (!transferable(best)) {
+        const resolvablePage = (best && (best.watchUrl || best.url)) || page;
+        if (/^https?:\/\//i.test(resolvablePage)) {
+          sendResponse(await launchViaHelper({
+            ...incoming,
+            url: resolvablePage,
+            watchUrl: resolvablePage,
+            pageUrl: page,
+            title: incoming.title || (tab && tab.title) || page
+          }, message.play !== false, { subPref: "auto" }));
+          return;
+        }
+        sendResponse({ ok: false, reason: "no-stream" });
+        return;
+      }
+      sendResponse(await launchViaHelper(best, message.play !== false, { subPref: "auto" }));
     });
     return true;
   }
@@ -511,13 +762,27 @@ if (chrome.webRequest && chrome.webRequest.onCompleted) {
       if (usesPageCatalog(tab.url || "")) {
         return;
       }
-      rememberNetwork(details.tabId, details.url, tab.url);
+      rememberNetwork(
+        details.tabId,
+        details.url,
+        tab.url,
+        details.responseHeaders,
+        details.documentUrl || details.initiator || tab.url
+      );
     });
-  }, { urls: ["http://*/*", "https://*/*"] });
+  }, { urls: ["http://*/*", "https://*/*"] }, ["responseHeaders"]);
 }
 
-chrome.tabs.onRemoved.addListener((tabId) => {
+function forgetTab(tabId) {
   playingByTab.delete(tabId);
   skippedByTab.delete(tabId);
   mediaByTab.delete(tabId);
+}
+
+chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
+  if (changeInfo.url) {
+    forgetTab(tabId);
+  }
 });
+
+chrome.tabs.onRemoved.addListener(forgetTab);
