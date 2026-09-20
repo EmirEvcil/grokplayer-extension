@@ -5,12 +5,81 @@
   const videoSound = new WeakMap();
   const playAt = new WeakMap();
   const seenMedia = [];
+  const seenCaptions = [];
   const shortMedia = new Set();
+  const videoCaptions = new WeakMap();
   let active = null;
   let childPlaying = false;
+  let lastCaptionAt = 0;
+
+  function looksCaptionNoise(url) {
+    return /chapter|storyboard|thumb|seeker|filmstrip|sprite|preview|timeline/i.test(url || "");
+  }
 
   function looksCaption(url) {
-    return typeof url === "string" && /(?:\.vtt|\.srt)(?:$|\?)/i.test(url);
+    if (typeof url !== "string" || !/^https?:\/\//i.test(url) || looksCaptionNoise(url)) {
+      return false;
+    }
+    if (/\.(vtt|srt|ass|ssa|ttml|dfxp)(?:$|\?)/i.test(url)) {
+      return true;
+    }
+    if (/\/(?:subtitles?|subs?|captions?)(?:\/|_)/i.test(url) || /subtitle[_-]|captions?[_=]|timedtext/i.test(url)) {
+      return true;
+    }
+    return /[?&](?:kind=captions|fmt=vtt|format=vtt|type=text\/vtt)/i.test(url);
+  }
+
+  function captionLangFromUrl(url, label) {
+    const fromLabel = languageHint(label);
+    if (fromLabel) {
+      return fromLabel;
+    }
+    const text = String(url || "");
+    const named = /subtitle[_-]([a-z]{2,3})(?:[_-]auto)?(?:$|\.|\/|\?)/i.exec(text) ||
+      /[_/-](eng|tur|trk|ger|deu|fra|fre|spa|ita|rus|ara|por|jpn|kor|chi|zho|und)(?:[_-]auto)?(?:$|\.|\/|\?)/i.exec(text) ||
+      /(?:^|[?&/;_=-])lang=([a-z]{2,3}(?:[-_][a-z]{2,8})?)/i.exec(text) ||
+      /\/([a-z]{2,3})(?:[_-]auto)?\.vtt(?:$|\?)/i.exec(text);
+    return languageHint(named && named[1]);
+  }
+
+  function languageHint(value) {
+    const raw = String(value || "").trim().toLowerCase();
+    if (!raw) {
+      return "";
+    }
+    if (/^(off|none|false)$/i.test(raw)) {
+      return "off";
+    }
+    const aliases = {
+      eng: "en",
+      english: "en",
+      tur: "tr",
+      trk: "tr",
+      turkish: "tr",
+      turkce: "tr",
+      türkçe: "tr",
+      ger: "de",
+      deu: "de",
+      german: "de",
+      fra: "fr",
+      fre: "fr",
+      french: "fr",
+      spa: "es",
+      spanish: "es",
+      ita: "it",
+      rus: "ru",
+      ara: "ar",
+      por: "pt",
+      jpn: "ja",
+      kor: "ko",
+      chi: "zh",
+      zho: "zh"
+    };
+    if (aliases[raw]) {
+      return aliases[raw];
+    }
+    const tagged = /^([a-z]{2,3})(?:[-_][a-z]{2,8})?$/.exec(raw);
+    return tagged ? tagged[1] : "";
   }
 
   function looksAd(url) {
@@ -466,11 +535,45 @@
     }
   }
 
+  function noteCaption(url, live) {
+    if (!looksCaption(url)) {
+      return;
+    }
+    const now = clockNow();
+    const last = seenCaptions[seenCaptions.length - 1];
+    if (last && last.url === url) {
+      last.at = now;
+    } else {
+      seenCaptions.push({
+        url,
+        at: now,
+        lang: captionLangFromUrl(url),
+        label: ""
+      });
+      if (seenCaptions.length > 32) {
+        seenCaptions.shift();
+      }
+    }
+    if (live) {
+      lastCaptionAt = now;
+      const video = currentVideo();
+      if (video) {
+        videoCaptions.set(video, url);
+      }
+    }
+  }
+
   try {
-    performance.getEntriesByType("resource").forEach((entry) => noteMedia(entry.name, false));
+    performance.getEntriesByType("resource").forEach((entry) => {
+      noteMedia(entry.name, false);
+      noteCaption(entry.name, false);
+    });
     if (typeof PerformanceObserver === "function") {
       new PerformanceObserver((list) => {
-        list.getEntries().forEach((entry) => noteMedia(entry.name, true));
+        list.getEntries().forEach((entry) => {
+          noteMedia(entry.name, true);
+          noteCaption(entry.name, true);
+        });
       }).observe({ type: "resource", buffered: false });
     }
   } catch {
@@ -804,7 +907,7 @@
       if (/recaptcha|doubleclick|googletagmanager|facebook\.com\/tr/i.test(mark)) {
         return false;
       }
-      if (/embed|player|video|vod|rapidvid|rapidrame|watch|playturka|aspect-video|group\/player|player-container|video-player/i.test(mark)) {
+      if (/embed|player|video|vod|rapidvid|rapidrame|watch|playturka|aspect-video|group\/player|player-container|video-player|\bclose\b/i.test(mark)) {
         return true;
       }
       return box.width >= 400 && box.height >= 200;
@@ -1049,6 +1152,191 @@
     return /kick\.com/i.test(page || "");
   }
 
+  function looksPackedCdn(url) {
+    return /playmix\.uno|\/txt\/master\.txt/i.test(url || "");
+  }
+
+  function playerPageUrl(playUrl, frameUrl, page) {
+    if (looksPackedCdn(playUrl)) {
+      return frameUrl || page || playUrl;
+    }
+    return playUrl || frameUrl || page || "";
+  }
+
+  function captionTrack(url, label, lang, selected) {
+    if (typeof url !== "string" || !/^https?:\/\//i.test(url) || looksCaptionNoise(url)) {
+      return null;
+    }
+    if (!looksCaption(url) && !label && !lang) {
+      return null;
+    }
+    const code = lang || captionLangFromUrl(url, label) || "";
+    return {
+      code: code || "und",
+      url,
+      name: label || code || "Subtitle",
+      selected: !!selected
+    };
+  }
+
+  function addCaptionTrack(list, url, label, lang, selected) {
+    const track = captionTrack(url, label, lang, selected);
+    if (!track) {
+      return;
+    }
+    const existing = list.find((item) => item.url === track.url);
+    if (existing) {
+      if (selected) {
+        existing.selected = true;
+      }
+      if (!existing.code || existing.code === "und") {
+        existing.code = track.code;
+      }
+      if (track.name && existing.name === "Subtitle") {
+        existing.name = track.name;
+      }
+      return;
+    }
+    list.push(track);
+  }
+
+  function parseLabeledCaptions(text, list) {
+    if (typeof text !== "string" || !text) {
+      return;
+    }
+    const re = /\[([^\]]+)\]\s*(https?:\/\/[^\s,"'\]]+)/g;
+    let match;
+    while ((match = re.exec(text))) {
+      addCaptionTrack(list, match[2], match[1], languageHint(match[1]), false);
+    }
+  }
+
+  function tracksFromVideo(video, list) {
+    if (!video) {
+      return "";
+    }
+    let showing = "";
+    if (video.querySelectorAll) {
+      video.querySelectorAll("track").forEach((node) => {
+        const src = node.src || (node.getAttribute && (node.getAttribute("src") || node.getAttribute("data-src"))) || "";
+        const kind = (node.kind || (node.getAttribute && node.getAttribute("kind")) || "").toLowerCase();
+        if (kind && kind !== "captions" && kind !== "subtitles") {
+          return;
+        }
+        const label = node.label || (node.getAttribute && node.getAttribute("label")) || "";
+        const lang = node.srclang || (node.getAttribute && node.getAttribute("srclang")) || "";
+        addCaptionTrack(list, src, label, languageHint(lang) || languageHint(label), node.default);
+      });
+    }
+    const tracks = video.textTracks;
+    if (tracks && tracks.length) {
+      for (let i = 0; i < tracks.length; i++) {
+        const item = tracks[i];
+        if (!item || (item.kind && item.kind !== "captions" && item.kind !== "subtitles")) {
+          continue;
+        }
+        if (item.mode === "showing") {
+          showing = item.label || item.language || "on";
+        }
+      }
+    }
+    return showing;
+  }
+
+  let pageCaptionCache = [];
+  let pageCaptionAt = -1e9;
+
+  function tracksFromPage(list) {
+    try {
+      if (typeof document !== "undefined" && document.querySelectorAll) {
+        document.querySelectorAll("track[src], track[data-src]").forEach((node) => {
+          const src = node.src || node.getAttribute("src") || node.getAttribute("data-src") || "";
+          addCaptionTrack(list, src, node.label || node.getAttribute("label") || "", languageHint(node.srclang || node.getAttribute("srclang")), node.default);
+        });
+      }
+      if (typeof window !== "undefined" && window.playerjsSubtitle) {
+        parseLabeledCaptions(String(window.playerjsSubtitle), list);
+      }
+      if (typeof document !== "undefined" && document.documentElement) {
+        if (clockNow() - pageCaptionAt > 2000) {
+          pageCaptionCache = [];
+          parseLabeledCaptions(document.documentElement.innerHTML, pageCaptionCache);
+          pageCaptionAt = clockNow();
+        }
+        pageCaptionCache.forEach((item) => addCaptionTrack(list, item.url, item.name, item.code, false));
+      }
+    } catch {
+    }
+  }
+
+  function playerTrackSnapshot() {
+    try {
+      const raw = typeof document !== "undefined" && document.documentElement
+        ? document.documentElement.getAttribute("data-grokplayer-tracks")
+        : "";
+      return raw ? JSON.parse(raw) : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function applyPlayerTracks(captions, audioInfo) {
+    const snap = playerTrackSnapshot();
+    if (!snap) {
+      return { captions, audio: audioInfo };
+    }
+    (snap.captions || []).forEach((item) => {
+      if (item && item.url) {
+        addCaptionTrack(captions.tracks, item.url, item.name, item.lang, false);
+      }
+    });
+    captions.tracks.forEach((item) => {
+      item.selected = false;
+    });
+    captions.url = "";
+    captions.lang = "";
+    return { captions, audio: audioInfo };
+  }
+
+  function selectedAudio(video) {
+    if (!video || !video.audioTracks || !video.audioTracks.length) {
+      return { code: "", url: "" };
+    }
+    let enabled = null;
+    for (let i = 0; i < video.audioTracks.length; i++) {
+      if (video.audioTracks[i] && video.audioTracks[i].enabled) {
+        enabled = video.audioTracks[i];
+        break;
+      }
+    }
+    const track = enabled || video.audioTracks[0];
+    return {
+      code: languageHint(track.language || track.label) || "",
+      url: "",
+      name: track.label || track.language || ""
+    };
+  }
+
+  function captionsForVideo(video) {
+    const list = [];
+    tracksFromVideo(video, list);
+    tracksFromPage(list);
+    const origin = video && playAt.has(video) ? playAt.get(video) : Math.max(0, clockNow() - 30000);
+    seenCaptions.forEach((item) => {
+      if (item.at >= origin - 8000) {
+        addCaptionTrack(list, item.url, item.label, item.lang, false);
+      }
+    });
+    list.forEach((item) => {
+      item.selected = false;
+    });
+    return {
+      url: "",
+      lang: "",
+      tracks: list
+    };
+  }
+
   function pickTransfer(playing, sources, page, catalog, liveCatalog, duration) {
     const pageUrl = (page || "").split("?")[0];
     if (liveCatalog) {
@@ -1097,7 +1385,7 @@
     const video = chosen && chosen.tagName === "VIDEO" ? chosen : currentVideo();
     rememberVideoMedia(video);
     const frame = chosen && chosen.tagName === "IFRAME" ? chosen : null;
-    const frameUrl = frame ? frameHref(frame) : "";
+    let frameUrl = frame ? frameHref(frame) : "";
     const liveCatalog = catalog && kind === "live";
     const sources = liveCatalog ? [] : (frame ? sourcesForFrame(frame) : sourcesFor(video));
     const playing = mediaForVideo(video) || videoHref(video);
@@ -1105,9 +1393,23 @@
     const duration = video && Number.isFinite(video.duration) && video.duration > 0 && video.duration < 604800
       ? video.duration
       : 0;
-    const playUrl = pickTransfer(playing, sources, page, catalog, liveCatalog, duration);
+    let playUrl = pickTransfer(playing, sources, page, catalog, liveCatalog, duration);
+    const rawCaptions = liveCatalog ? { url: "", lang: "", tracks: [] } : captionsForVideo(video);
+    const merged = liveCatalog
+      ? { captions: rawCaptions, audio: selectedAudio(video) }
+      : applyPlayerTracks(rawCaptions, selectedAudio(video));
+    const captions = merged.captions;
+    const audio = merged.audio;
+    const snap = liveCatalog ? null : playerTrackSnapshot();
+    if (snap && snap.mediaUrl && looksMedia(snap.mediaUrl) && !looksAd(snap.mediaUrl)) {
+      playUrl = snap.mediaUrl;
+    }
+    if (!frameUrl && looksPackedCdn(playUrl)) {
+      frameUrl = frameHref(playerIframes()[0]);
+    }
+    const sound = (video && videoSound.get(video)) || audio.url || "";
     return {
-      watchUrl: playUrl || frameUrl || (usesPageFallback(page) ? pageUrl : page),
+      watchUrl: usesPageFallback(page) ? pageUrl : playerPageUrl(playUrl, frameUrl, page),
       url: playUrl || frameUrl,
       pageUrl: page,
       title: (typeof document !== "undefined" && document.title) || "",
@@ -1115,10 +1417,12 @@
       captionUrl: "",
       mediaUrls: sources.map((item) => item.url),
       sources,
-      captionTracks: [],
+      captionTracks: captions.tracks,
+      sub: "",
+      audio: "",
       duration,
       hasPreroll: allVideos().some((node) => isPrerollVideo(node)),
-      audioUrl: (video && videoSound.get(video)) || "",
+      audioUrl: sound,
       ad: !!(playUrl && looksAd(playUrl)),
       playingNow: !!(video && isActivePlayback(video)),
       canSkip: sources.some((item) => item.url && item.url !== playUrl && !looksAd(item.url) && !skipped.has(item.url)) ||
@@ -1236,6 +1540,14 @@
     document.addEventListener("loadedmetadata", onDuration, true);
     document.addEventListener("durationchange", onDuration, true);
     document.addEventListener("emptied", onEmptied, true);
+    document.addEventListener("addtrack", reportPlaying, true);
+    document.addEventListener("removetrack", reportPlaying, true);
+    document.addEventListener("change", (event) => {
+      const name = event && event.target && event.target.constructor && event.target.constructor.name;
+      if (name === "TextTrackList" || name === "AudioTrackList" || name === "TextTrack") {
+        reportPlaying();
+      }
+    }, true);
   }
 
   window.GrokPlayerSniff = Object.assign(sniff, {
@@ -1245,6 +1557,11 @@
     instagramPageMedia,
     markPlayed,
     looksCaption,
+    looksCaptionNoise,
+    captionLangFromUrl,
+    noteCaption,
+    captionsForVideo,
+    playerTrackSnapshot,
     looksAd,
     looksKickLive,
     looksClosePlaylist,

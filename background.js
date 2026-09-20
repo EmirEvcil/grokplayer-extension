@@ -22,6 +22,25 @@ function isCatalogUrl(url) {
   return /(?:youtube\.com|youtu\.be|kick\.com|twitch\.tv|rumble\.com|tiktok\.com|dailymotion\.com|dai\.ly|instagram\.com)/i.test(url || "");
 }
 
+function looksCaption(url) {
+  if (!url || !/^https?:\/\//i.test(url) || /chapter|storyboard|thumb|seeker|filmstrip|sprite|preview|timeline/i.test(url)) {
+    return false;
+  }
+  return /\.(vtt|srt|ass|ssa|ttml|dfxp)(?:$|\?)/i.test(url) ||
+    /\/(?:subtitles?|subs?|captions?)(?:\/|_)/i.test(url) ||
+    /subtitle[_-]|captions?[_=]|timedtext/i.test(url);
+}
+
+function looksPreviewManifest(url) {
+  return !!(url && /^https?:\/\//i.test(url) &&
+    /(?:thumbnail|storyboard|thumb|seeker|filmstrip|sprite|preview|timeline)/i.test(url) &&
+    /\.vtt(?:$|[?#])/i.test(url));
+}
+
+function transferableCaption(url) {
+  return !!(url && /^https?:\/\//i.test(url) && !/chapter|storyboard|thumb|seeker|filmstrip|sprite|preview|timeline/i.test(url) && !looksImageList(url));
+}
+
 function looksAd(url) {
   return /doubleclick|googlesyndication|imasdk|adsystem|\/ads?\/|preroll|vast|spotx|pubads|adnxs|advert|promo|\/rekla\/|reklam|xpartner|dmxleo|clips\.kick|\/clips?\/|bumper|marmorated\.pics|shrgo\.net/i.test(url || "");
 }
@@ -92,23 +111,32 @@ const playingByTab = new Map();
 const skippedByTab = new Map();
 const mediaByTab = new Map();
 
+function pageCatalogHost(url) {
+  try {
+    return new URL(url).hostname.replace(/^www\./i, "").toLowerCase();
+  } catch {
+    return "";
+  }
+}
+
 function usesPageCatalog(url) {
-  if (/(?:youtube\.com|youtu\.be)/i.test(url || "")) {
+  // Only the site watch page. CDN hosts such as cdndirector.dailymotion.com
+  // carry the playback proof in the query string and must not be treated as
+  // a catalog page (that would strip ?sec= and open a black 0:00 stream).
+  const host = pageCatalogHost(url);
+  if (host === "youtube.com" || host === "youtu.be" || host === "youtube-nocookie.com") {
     return true;
   }
-  if (/(?:dailymotion\.com|dai\.ly)/i.test(url || "")) {
+  if (host === "dailymotion.com" || host === "dai.ly") {
     return true;
   }
-  if (/twitch\.tv/i.test(url || "")) {
+  if (host === "twitch.tv") {
     return true;
   }
-  if (/rumble\.com/i.test(url || "")) {
+  if (host === "rumble.com") {
     return true;
   }
-  // Kick VOD pages expose live-channel and ad requests alongside the actual
-  // recording. Always let the desktop catalog resolve the page through
-  // Kick's playback API instead of promoting a browser request.
-  if (/kick\.com/i.test(url || "")) {
+  if (host === "kick.com") {
     return true;
   }
   return false;
@@ -147,8 +175,41 @@ function looksAudioOnly(url) {
   return /dash[_-]?audio|audio[_-]?dash|mime_type=audio|_audio|\/audio\/|heaac|mp4a/i.test(url || "");
 }
 
+const captionsByTab = new Map();
+const previewsByTab = new Map();
+
+function rememberPreview(tabId, url, pageUrl) {
+  if (!tabId || tabId < 0 || !looksPreviewManifest(url)) return;
+  previewsByTab.set(tabId, { url, at: Date.now(), page: pageUrl || "" });
+}
+
+function recentPreview(tabId, pageUrl) {
+  const item = previewsByTab.get(tabId);
+  return item && Date.now() - item.at < 10 * 60 * 1000 &&
+    (!pageUrl || !item.page || sameTopPage(item.page, pageUrl)) ? item.url : "";
+}
+
+function rememberCaption(tabId, url, pageUrl) {
+  if (!tabId || tabId < 0 || !looksCaption(url)) {
+    return;
+  }
+  const list = captionsByTab.get(tabId) || [];
+  const next = list.filter((item) => item.url !== url);
+  next.push({ url, at: Date.now(), page: pageUrl || "" });
+  captionsByTab.set(tabId, next.slice(-16));
+}
+
+function recentCaptions(tabId, pageUrl) {
+  const now = Date.now();
+  return (captionsByTab.get(tabId) || []).filter((item) =>
+    now - item.at < 10 * 60 * 1000 && (!pageUrl || !item.page || sameTopPage(item.page, pageUrl))
+  );
+}
+
 function rememberNetwork(tabId, url, pageUrl, responseHeaders, referrerPage) {
   url = stripByteRange(url);
+  rememberPreview(tabId, url, pageUrl);
+  rememberCaption(tabId, url, pageUrl);
   const detectedMedia = looksMedia(url) || looksMediaResponse(url, responseHeaders);
   if (!tabId || tabId < 0 || !detectedMedia || looksAd(url) || looksImageList(url) || looksAudioOnly(url)) {
     return;
@@ -315,6 +376,69 @@ function betterInfo(left, right, tabId) {
   return score(right) > score(left) ? right : left;
 }
 
+function mergeSidecars(best, extras) {
+  if (!best) {
+    return best;
+  }
+  const tracks = [];
+  const seen = new Set();
+  let captionUrl = best.captionUrl || "";
+  let sub = best.sub || "";
+  let audio = best.audio || "";
+  let audioUrl = best.audioUrl || "";
+  let previewUrl = best.previewUrl || "";
+  (extras || []).concat([best]).forEach((info) => {
+    if (!info) {
+      return;
+    }
+    (info.captionTracks || []).forEach((track) => {
+      if (!track || !track.url || seen.has(track.url) || !transferableCaption(track.url)) {
+        return;
+      }
+      seen.add(track.url);
+      tracks.push(track);
+    });
+    if (!captionUrl && info.captionUrl && transferableCaption(info.captionUrl)) {
+      captionUrl = info.captionUrl;
+      sub = info.sub || sub;
+    }
+    if (info.playingNow && info.audioUrl) {
+      audioUrl = info.audioUrl;
+    }
+    if (!previewUrl && info.previewUrl) {
+      previewUrl = info.previewUrl;
+    }
+  });
+  if (captionUrl && tracks.length && !tracks.some((item) => item.url === captionUrl)) {
+    tracks.unshift({
+      code: sub || "und",
+      url: captionUrl,
+      name: sub || "Subtitle",
+      selected: false
+    });
+  }
+  tracks.forEach((item) => {
+    item.selected = false;
+  });
+  let media = best.url || "";
+  (extras || []).forEach((info) => {
+    if (info && info.url && looksMedia(info.url) && (info.playingNow || !looksMedia(media))) {
+      media = info.url;
+    }
+  });
+  return {
+    ...best,
+    url: looksMedia(media) ? media : best.url,
+    detectedMedia: !!(looksMedia(media) || best.detectedMedia),
+    captionUrl,
+    captionTracks: tracks,
+    sub,
+    audio,
+    audioUrl,
+    previewUrl
+  };
+}
+
 function catalogUrl(url) {
   if (!url) {
     return "";
@@ -326,8 +450,18 @@ function catalogUrl(url) {
 }
 
 function catalogPage(info) {
-  const page = (info && (info.watchUrl || info.pageUrl || info.tabUrl || info.url)) || "";
-  return usesPageCatalog(page) ? catalogUrl(page) : "";
+  const candidates = [
+    info && info.pageUrl,
+    info && info.tabUrl,
+    info && info.watchUrl,
+    info && info.url
+  ];
+  for (const item of candidates) {
+    if (item && usesPageCatalog(item) && !looksMedia(item)) {
+      return catalogUrl(item);
+    }
+  }
+  return "";
 }
 
 function protocol(info, play) {
@@ -366,6 +500,16 @@ function protocol(info, play) {
   if (info.kind !== "live" && info.captionUrl) {
     params.set("caption", info.captionUrl);
   }
+  if (info.kind !== "live") {
+    (info.captionTracks || []).forEach((track) => {
+      if (!track || !track.url || !transferableCaption(track.url)) {
+        return;
+      }
+      const lang = track.code || track.lang || "und";
+      const name = track.name || lang;
+      params.append("cap", lang + "|" + track.url + (name ? "|" + name : ""));
+    });
+  }
   if (info.height) {
     params.set("height", String(info.height));
   }
@@ -374,6 +518,9 @@ function protocol(info, play) {
   }
   if (info.audioUrl && looksMedia(info.audioUrl) && info.audioUrl !== media) {
     params.set("sound", info.audioUrl);
+  }
+  if (info.kind !== "live" && info.previewUrl && /^https?:\/\//i.test(info.previewUrl)) {
+    params.set("preview", info.previewUrl);
   }
   params.set("play", play ? "1" : "0");
   return "grokplayer://open?" + params.toString();
@@ -468,6 +615,204 @@ function transferable(info) {
   return !!(info && (looksMedia(info.url) || info.detectedMedia) && !looksAd(info.url) && !looksImageList(info.url) && !isPrerollInfo(info));
 }
 
+function readPagePlayerTracks() {
+  function langOf(value) {
+    const text = String(value || "").trim();
+    if (!text) {
+      return "";
+    }
+    if (/^(off|none|false|0)$/i.test(text)) {
+      return "off";
+    }
+    const aliases = {
+      eng: "en", english: "en", tur: "tr", trk: "tr", turkish: "tr", turkce: "tr",
+      ger: "de", deu: "de", german: "de"
+    };
+    const lower = text.toLowerCase();
+    if (aliases[lower]) {
+      return aliases[lower];
+    }
+    const tagged = /^([A-Za-z]{2,3})(?:[-_][A-Za-z]{2,8})?$/.exec(text);
+    return tagged ? tagged[1].toLowerCase() : "";
+  }
+  function pushUnique(list, item) {
+    if (!item) {
+      return;
+    }
+    const key = (item.url || "") + "|" + (item.lang || "") + "|" + (item.name || "");
+    if (list.some((entry) => (entry.url || "") + "|" + (entry.lang || "") + "|" + (entry.name || "") === key)) {
+      return;
+    }
+    list.push(item);
+  }
+  const captions = [];
+  const audio = [];
+  let mediaUrl = "";
+  let previewUrl = "";
+  function inspectTracks(items) {
+    if (!Array.isArray(items)) {
+      return;
+    }
+    items.forEach((track) => {
+      if (!track || typeof track !== "object") {
+        return;
+      }
+      const kind = String(track.kind || track.type || "").toLowerCase();
+      const href = String(track.file || track.src || track.url || "");
+      if (!/^https?:\/\//i.test(href)) {
+        return;
+      }
+      if (/thumbnail|storyboard|preview|sprite|timeline/.test(kind + " " + String(track.label || track.name || ""))) {
+        if (!previewUrl && /\.vtt(?:$|[?#])/i.test(href)) {
+          previewUrl = href;
+        }
+        return;
+      }
+      if (kind && kind !== "captions" && kind !== "subtitles") {
+        return;
+      }
+      pushUnique(captions, {
+        url: href,
+        lang: langOf(track.language || track.lang) || langOf(track.label || track.name),
+        name: track.label || track.name || "",
+        off: false,
+        selected: false
+      });
+    });
+  }
+  try {
+    // FastPlay and several JW wrappers expose their media metadata through a
+    // small page config rather than DOM <track> elements.
+    inspectTracks(window.FSP && window.FSP.tracks);
+  } catch {
+  }
+  try {
+    if (typeof window.jwplayer === "function") {
+      const player = window.jwplayer();
+      try {
+        const item = player && player.getPlaylistItem ? player.getPlaylistItem() :
+          (player && player.getPlaylist ? (player.getPlaylist() || [])[0] : null);
+        const file = item && (item.file || (item.sources && item.sources[0] && item.sources[0].file));
+        if (file && /^https?:\/\//i.test(file)) {
+          mediaUrl = file;
+        }
+        inspectTracks(item && item.tracks || []);
+      } catch {
+      }
+      if (player && typeof player.getCaptionsList === "function") {
+        const list = player.getCaptionsList() || [];
+        list.forEach((item) => {
+          const label = (item && (item.label || item.name)) || "";
+          const off = !item || item.id === "off" || /^off$/i.test(label);
+          const url = off ? "" : String((item && (item.id || item.file)) || "");
+          if (!url) {
+            return;
+          }
+          pushUnique(captions, {
+            url,
+            lang: langOf(item && (item.language || item.lang)) || langOf(label),
+            name: label || "Subtitle",
+            off: false,
+            selected: false
+          });
+        });
+      }
+    }
+  } catch {
+  }
+  try {
+    const videos = document.querySelectorAll("video");
+    videos.forEach((video) => {
+      const own = video.currentSrc || video.src || "";
+      if (!mediaUrl && /^https?:\/\//i.test(own) && !/^https?:\/\/[^/]*doubleclick|^https?:\/\/[^/]*googlesyndication/i.test(own)) {
+        mediaUrl = own;
+      }
+      const hls = video.hls || video._hls || video.__hls;
+      if (hls) {
+        if (!mediaUrl && hls.url && /^https?:\/\//i.test(hls.url)) {
+          mediaUrl = hls.url;
+        }
+        (hls.subtitleTracks || []).forEach((item) => {
+          const url = String((item && (item.url || item.uri)) || "");
+          if (!url) {
+            return;
+          }
+          pushUnique(captions, {
+            url,
+            lang: langOf(item && (item.lang || item.language)) || langOf(item && item.name),
+            name: (item && (item.name || item.label)) || "",
+            off: false,
+            selected: false
+          });
+        });
+      }
+      if (video.textTracks) {
+        for (let i = 0; i < video.textTracks.length; i++) {
+          const item = video.textTracks[i];
+          if (!item || (item.kind && item.kind !== "captions" && item.kind !== "subtitles")) {
+            continue;
+          }
+          pushUnique(captions, {
+            url: "",
+            lang: langOf(item.language) || langOf(item.label),
+            name: item.label || item.language || "",
+            off: false,
+            selected: false
+          });
+        }
+      }
+      video.querySelectorAll("track").forEach((track) => {
+        const kind = String(track.kind || "").toLowerCase();
+        const href = String(track.src || track.getAttribute("src") || "");
+        if (/thumbnail|storyboard|preview|sprite|timeline/.test(kind + " " + String(track.label || "")) &&
+            /^https?:\/\//i.test(href) && /\.vtt(?:$|[?#])/i.test(href)) {
+          previewUrl ||= href;
+        }
+      });
+    });
+  } catch {
+  }
+  try {
+    const raw = typeof window.playerjsSubtitle === "string" ? window.playerjsSubtitle : "";
+    const re = /\[([^\]]+)\]\s*(https?:\/\/[^\s,"'\]]+)/g;
+    let match;
+    while ((match = re.exec(raw))) {
+      pushUnique(captions, {
+        url: match[2],
+        lang: langOf(match[1]),
+        name: match[1],
+        off: false,
+        selected: false
+      });
+    }
+  } catch {
+  }
+  return {
+    mediaUrl,
+    captionUrl: "",
+    sub: "",
+    audio: "",
+    audioName: "",
+    captions,
+    audioTracks: audio,
+    previewUrl,
+    playingNow: Array.prototype.some.call(document.querySelectorAll("video") || [], (video) => !video.paused && !video.ended)
+  };
+}
+
+async function collectMainTracks(tabId) {
+  try {
+    const injected = await chrome.scripting.executeScript({
+      target: { tabId, allFrames: true },
+      world: "MAIN",
+      func: readPagePlayerTracks
+    });
+    return (injected || []).map((item) => item && item.result).filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
 async function collectSniff(tab) {
   let best = betterInfo(null, recentPlaying(tab.id, tab.url), tab.id);
   try {
@@ -491,10 +836,50 @@ async function collectSniff(tab) {
         return typeof api.current === "function" ? api.current() : api();
       }
     });
+    const extras = [];
     (sniffed || []).forEach((item) => {
-      best = betterInfo(best, item && item.result, tab.id);
+      const info = item && item.result;
+      extras.push(info);
+      best = betterInfo(best, info, tab.id);
     });
+    if (best) {
+      const networkCaps = recentCaptions(tab.id, tab.url).map((item) => ({
+        captionUrl: item.url,
+        captionTracks: [{ code: "und", url: item.url, name: "Subtitle", selected: false }]
+      }));
+      best = mergeSidecars(best, extras.concat(networkCaps));
+    }
   } catch {
+  }
+
+  try {
+    const mainTracks = await collectMainTracks(tab.id);
+    const extras = mainTracks.map((snap) => ({
+      url: snap.mediaUrl || "",
+      detectedMedia: !!(snap.mediaUrl && looksMedia(snap.mediaUrl)),
+      captionUrl: "",
+      captionTracks: (snap.captions || []).filter((item) => item && item.url).map((item) => ({
+        code: item.lang || "und",
+        url: item.url,
+        name: item.name || item.lang || "Subtitle",
+        selected: false
+      })),
+      sub: "",
+      audio: "",
+      audioUrl: "",
+      previewUrl: snap.previewUrl || "",
+      playingNow: !!snap.playingNow
+    }));
+    if (best) {
+      best = mergeSidecars(best, extras);
+    } else if (extras.length) {
+      best = mergeSidecars(extras[0], extras.slice(1));
+    }
+  } catch {
+  }
+
+  if (best && !best.previewUrl) {
+    best = mergeSidecars(best, [{ previewUrl: recentPreview(tab.id, tab.url) }]);
   }
 
   if (best && best.playingNow && !isPrerollInfo(best)) {
@@ -545,13 +930,15 @@ async function sniffTab(tab) {
 
   if (usesPageCatalog(tab.url || "")) {
     const watch = catalogUrl(tab.url);
-    return {
+    const catalog = {
       watchUrl: watch,
       url: watch,
       pageUrl: tab.url,
       title: tab.title || "",
       kind: pageKindFromUrl(tab.url)
     };
+    const sniffed = await collectSniff(tab);
+    return mergeSidecars(catalog, [sniffed]);
   }
 
   let best = await collectSniff(tab);
@@ -600,6 +987,9 @@ async function openTab(tab, play, overrides) {
         kind: sniffed.kind,
         captionUrl: sniffed.captionUrl,
         captionTracks: sniffed.captionTracks,
+        sub: sniffed.sub,
+        audio: sniffed.audio,
+        audioUrl: sniffed.audioUrl,
         sources: sniffed.sources,
         duration: sniffed.duration
       },
@@ -627,7 +1017,11 @@ function embeddedPlayerPage(info) {
   // Some HLS players attach a per-request proof header in page JavaScript.
   // Passing their manifest directly loses that proof; pass the HTML player to
   // the desktop resolver so it can reproduce the protected request flow.
-  if (looksProtectedMedia(info.url) && /^https?:\/\//i.test(page) && !looksMedia(page)) {
+  if (/playmix\.uno/i.test(info.url || "") && /^https?:\/\//i.test(watch) && !looksMedia(watch)) {
+    return watch;
+  }
+  if ((looksProtectedMedia(info.url) || /playmix\.uno/i.test(info.url || "")) &&
+      /^https?:\/\//i.test(page) && !looksMedia(page)) {
     return page;
   }
   // A visible player iframe is a resolvable HTML page, not media. Preserve it
@@ -673,32 +1067,38 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       const tab = sender && sender.tab;
       const incoming = message.info || {};
       const page = incoming.pageUrl || incoming.watchUrl || (tab && tab.url) || "";
-      if (usesPageCatalog(page)) {
+      const sniffed = tab ? await collectSniff(tab) : null;
+      let best = mergeSidecars({ ...incoming, pageUrl: page }, [incoming, sniffed]);
+      if (usesPageCatalog(page) && !looksMedia(best.url)) {
         const watch = catalogUrl(incoming.watchUrl || page);
         sendResponse(await launchViaHelper({
-          ...incoming,
+          ...best,
           url: watch,
           watchUrl: watch,
-          kind: incoming.kind || pageKindFromUrl(page)
+          kind: best.kind || pageKindFromUrl(page)
         }, message.play !== false, { subPref: "auto" }));
         return;
       }
-      const embeddedPage = embeddedPlayerPage(incoming);
+      if (looksMedia(best.url) && !/playmix\.uno/i.test(best.url || "")) {
+        sendResponse(await launchViaHelper({
+          ...best,
+          detectedMedia: true,
+          pageUrl: page,
+          kind: best.kind || "vod"
+        }, message.play !== false, { subPref: "auto" }));
+        return;
+      }
+      const embeddedPage = embeddedPlayerPage(best);
       if (embeddedPage) {
         sendResponse(await launchViaHelper({
-          ...incoming,
+          ...best,
           url: embeddedPage,
           watchUrl: embeddedPage,
           pageUrl: page,
-          kind: incoming.kind || "vod"
+          kind: best.kind || "vod"
         }, message.play !== false, { subPref: "auto" }));
         return;
       }
-      const sniffed = tab ? await sniffTab(tab) : null;
-      const reported = tab ? recentPlaying(tab.id, tab.url) : null;
-      let best = betterInfo(null, incoming, tab && tab.id);
-      best = betterInfo(best, reported, tab && tab.id);
-      best = betterInfo(best, sniffed, tab && tab.id);
       const target = (best && (best.watchUrl || best.pageUrl || best.url)) || page;
       if (usesPageCatalog(target)) {
         const watch = catalogUrl(best && best.watchUrl ? best.watchUrl : target);
@@ -714,11 +1114,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         const resolvablePage = (best && (best.watchUrl || best.url)) || page;
         if (/^https?:\/\//i.test(resolvablePage)) {
           sendResponse(await launchViaHelper({
-            ...incoming,
+            ...best,
             url: resolvablePage,
             watchUrl: resolvablePage,
             pageUrl: page,
-            title: incoming.title || (tab && tab.title) || page
+            title: best.title || incoming.title || (tab && tab.title) || page
           }, message.play !== false, { subPref: "auto" }));
           return;
         }
@@ -777,6 +1177,8 @@ function forgetTab(tabId) {
   playingByTab.delete(tabId);
   skippedByTab.delete(tabId);
   mediaByTab.delete(tabId);
+  captionsByTab.delete(tabId);
+  previewsByTab.delete(tabId);
 }
 
 chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {

@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "GrokPlayer",
-  "version": "1.10.11",
+  "version": "1.10.20",
   "description": "Open YouTube, Kick, Twitch, and sniffed HLS/DASH streams in GrokPlayer.",
   "icons": {
     "16": "icons/icon16.png",
